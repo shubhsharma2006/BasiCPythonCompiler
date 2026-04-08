@@ -18,11 +18,14 @@ tokens = (
     'LPAREN', 'RPAREN', 'LBRACE', 'RBRACE',
     'COLON', 'COMMA', 'NEWLINE',
     'IF', 'ELIF', 'ELSE', 'WHILE', 'DEF', 'RETURN', 'PRINT',
+    'TRUE', 'FALSE', 'AND', 'OR', 'NOT',  
 )
 
 KEYWORDS = {
     'if': 'IF', 'elif': 'ELIF', 'else': 'ELSE', 'while': 'WHILE',
     'def': 'DEF', 'return': 'RETURN', 'print': 'PRINT',
+    'True': 'TRUE', 'False': 'FALSE',     # ← ADD
+    'and': 'AND', 'or': 'OR', 'not': 'NOT',  # ← ADD
 }
 
 # ── Multi-char operators (PLY sorts by regex length, longest first) ──

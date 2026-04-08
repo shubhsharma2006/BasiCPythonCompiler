@@ -1,24 +1,39 @@
 """
-ir.py — Intermediate Representation Generator (Enhanced)
+ir.py — Intermediate Representation Generator (Production)
 =========================================================
 Generates a flat list of IR instructions including structured markers
-for control flow (IF_BEGIN, IF_END, WHILE_BEGIN, etc.) so the C codegen
-can emit clean structured code instead of gotos.
+for control flow (IF_BEGIN, IF_END, WHILE_BEGIN, etc.)
+
+Supports:
+- Arithmetic
+- Comparison
+- Logical operations (and, or, not)
+- Functions
+- Control flow
 """
 
-from ast_nodes import *
+from ast_nodes import (
+    ProgramNode, AssignNode, PrintNode, BlockNode,
+    NumNode, StringNode, VarNode, BoolNode,
+    BinOpNode, CompareNode, UnaryOpNode,
+    LogicalOpNode, NotNode,
+    IfNode, WhileNode,
+    FuncDefNode, ReturnNode, FuncCallNode,
+)
 
+
+# =========================
+# IR Instruction
+# =========================
 
 class IRInstruction:
-    """A single IR instruction."""
-
     def __init__(self, op, result=None, arg1=None, arg2=None, operator=None, extra=None):
         self.op = op
         self.result = result
         self.arg1 = arg1
         self.arg2 = arg2
         self.operator = operator
-        self.extra = extra  # for params lists, etc.
+        self.extra = extra
 
     def __repr__(self):
         if self.op == 'binop':
@@ -59,9 +74,11 @@ class IRInstruction:
         return f"?? {self.op}"
 
 
-class IRGenerator:
-    """Walks the AST → flat list of IRInstruction objects."""
+# =========================
+# IR Generator
+# =========================
 
+class IRGenerator:
     def __init__(self):
         self._temp_count = 0
         self.instructions = []
@@ -84,11 +101,13 @@ class IRGenerator:
             raise NotImplementedError(f"IR: no visitor for {type(node).__name__}")
         return visitor(node)
 
-    # ── Statements ──────────────────────────────────────────
+    # =========================
+    # Statements
+    # =========================
 
     def _visit_ProgramNode(self, node):
-        for s in node.statements:
-            self._visit(s)
+        for stmt in node.statements:
+            self._visit(stmt)
 
     def _visit_AssignNode(self, node):
         rhs = self._visit(node.value)
@@ -99,16 +118,18 @@ class IRGenerator:
         if isinstance(node.expr, StringNode):
             self._emit('print_str', arg1=node.expr.value)
         else:
-            name = self._visit(node.expr)
-            self._emit('print', arg1=name)
+            val = self._visit(node.expr)
+            self._emit('print', arg1=val)
 
     def _visit_IfNode(self, node):
         cond = self._visit(node.condition)
         self._emit('if_begin', arg1=cond)
         self._visit(node.if_body)
+
         if node.else_body:
             self._emit('else')
             self._visit(node.else_body)
+
         self._emit('if_end')
 
     def _visit_WhileNode(self, node):
@@ -119,8 +140,8 @@ class IRGenerator:
         self._emit('while_end')
 
     def _visit_BlockNode(self, node):
-        for s in node.statements:
-            self._visit(s)
+        for stmt in node.statements:
+            self._visit(stmt)
 
     def _visit_FuncDefNode(self, node):
         self._emit('func_begin', arg1=node.name, extra=node.params)
@@ -131,27 +152,60 @@ class IRGenerator:
         val = self._visit(node.expr)
         self._emit('return', arg1=val)
 
-    # ── Expressions (return the name/temp holding the value) ──
+    # =========================
+    # Expressions
+    # =========================
 
     def _visit_BinOpNode(self, node):
-        l = self._visit(node.left)
-        r = self._visit(node.right)
+        left = self._visit(node.left)
+        right = self._visit(node.right)
+
         t = self._new_temp()
-        self._emit('binop', result=t, arg1=l, operator=node.op, arg2=r)
+        self._emit('binop', result=t, arg1=left, operator=node.op, arg2=right)
         return t
 
     def _visit_CompareNode(self, node):
-        l = self._visit(node.left)
-        r = self._visit(node.right)
+        left = self._visit(node.left)
+        right = self._visit(node.right)
+
         t = self._new_temp()
-        self._emit('compare', result=t, arg1=l, operator=node.op, arg2=r)
+        self._emit('compare', result=t, arg1=left, operator=node.op, arg2=right)
         return t
 
     def _visit_UnaryOpNode(self, node):
         operand = self._visit(node.operand)
+
         t = self._new_temp()
         self._emit('unary', result=t, arg1=operand, operator=node.op)
         return t
+
+    # =========================
+    # 🔥 Logical Expressions
+    # =========================
+
+    def _visit_BoolNode(self, node):
+        return '1' if node.value else '0'
+
+    def _visit_LogicalOpNode(self, node):
+        left = self._visit(node.left)
+        right = self._visit(node.right)
+
+        t = self._new_temp()
+        op = '&&' if node.op == 'and' else '||'
+
+        self._emit('binop', result=t, arg1=left, operator=op, arg2=right)
+        return t
+
+    def _visit_NotNode(self, node):
+        operand = self._visit(node.operand)
+
+        t = self._new_temp()
+        self._emit('unary', result=t, arg1=operand, operator='!')
+        return t
+
+    # =========================
+    # Literals
+    # =========================
 
     def _visit_NumNode(self, node):
         return str(node.value)
@@ -163,12 +217,11 @@ class IRGenerator:
         return node.name
 
     def _visit_FuncCallNode(self, node):
-        # Emit params in order
-        arg_names = []
-        for a in node.args:
-            arg_names.append(self._visit(a))
-        for a in arg_names:
+        args = [self._visit(a) for a in node.args]
+
+        for a in args:
             self._emit('param', arg1=a)
+
         t = self._new_temp()
-        self._emit('call', result=t, arg1=node.name, arg2=len(node.args))
+        self._emit('call', result=t, arg1=node.name, arg2=len(args))
         return t

@@ -164,3 +164,30 @@ class FuncCallNode(ASTNode):
 
     def __repr__(self):
         return f"Call({self.name!r}, {self.args!r})"
+class BoolNode(ASTNode):
+    """Boolean literal: True / False"""
+    def __init__(self, value):
+        self.value = value          # Python bool: True or False
+
+    def __repr__(self):
+        return f"Bool({self.value})"
+
+
+class LogicalOpNode(ASTNode):
+    """Logical binary op: left AND/OR right"""
+    def __init__(self, op, left, right):
+        self.op = op                # 'and' | 'or'
+        self.left = left
+        self.right = right
+
+    def __repr__(self):
+        return f"LogicalOp({self.op!r}, {self.left!r}, {self.right!r})"
+
+
+class NotNode(ASTNode):
+    """Logical NOT: not expr"""
+    def __init__(self, operand):
+        self.operand = operand
+
+    def __repr__(self):
+        return f"Not({self.operand!r})"

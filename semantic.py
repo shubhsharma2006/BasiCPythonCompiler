@@ -122,6 +122,16 @@ class SemanticAnalyser:
     def _visit_ReturnNode(self, node):
         self._visit(node.expr)
 
+    def _visit_BoolNode(self, _):
+        pass   # literals need no checking
+
+    def _visit_LogicalOpNode(self, node):
+        self._visit(node.left)
+        self._visit(node.right)
+
+    def _visit_NotNode(self, node):
+        self._visit(node.operand)
+
     def _visit_FuncCallNode(self, node):
         if node.name not in self.symbols.functions:
             if not self.symbols.is_defined(node.name):

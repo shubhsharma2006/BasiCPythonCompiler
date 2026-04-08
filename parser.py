@@ -12,11 +12,14 @@ from ast_nodes import (
     ProgramNode, AssignNode, BinOpNode, CompareNode, UnaryOpNode,
     NumNode, StringNode, VarNode, PrintNode, IfNode, WhileNode,
     BlockNode, FuncDefNode, ReturnNode, FuncCallNode,
+    BoolNode, LogicalOpNode, NotNode,   # ← ADD
 )
-
 # ── Operator precedence (lowest → highest) ─────────────────────
 
 precedence = (
+    ('left', 'OR'),                                          # ← ADD (lowest)
+    ('left', 'AND'),                                         # ← ADD
+    ('right', 'NOT'),                                        # ← ADD
     ('left', 'EQEQ', 'NEQ', 'LT', 'GT', 'LTE', 'GTE'),
     ('left', 'PLUS', 'MINUS'),
     ('left', 'TIMES', 'DIVIDE', 'MODULO'),
@@ -186,7 +189,25 @@ def p_arg_list_multi(p):
 def p_arg_list_single(p):
     """arg_list : expression"""
     p[0] = [p[1]]
+def p_expr_bool_true(p):
+    """expression : TRUE"""
+    p[0] = BoolNode(True)
 
+def p_expr_bool_false(p):
+    """expression : FALSE"""
+    p[0] = BoolNode(False)
+
+def p_expr_and(p):
+    """expression : expression AND expression"""
+    p[0] = LogicalOpNode('and', p[1], p[3])
+
+def p_expr_or(p):
+    """expression : expression OR expression"""
+    p[0] = LogicalOpNode('or', p[1], p[3])
+
+def p_expr_not(p):
+    """expression : NOT expression"""
+    p[0] = NotNode(p[2])
 # ── Error ──────────────────────────────────────────────────────
 
 def p_error(p):
