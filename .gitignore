@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+ast_output.png
+output
+output.c

@@ -1,176 +1,127 @@
-# Mini Python Compiler
+# Python Subset Compiler
 
-A complete **7-stage compiler pipeline** that translates a Python-like language
-into runnable C code, with an optimizer and AST visualisation.
+This repository now has two execution lanes for the current language surface:
 
+- a package-driven VM path for direct execution
+- a native path that lowers to C and links against a runtime library
+
+The active pipeline is rooted in `compiler/`.
+
+```text
+Python source -> lexer -> parser -> CST -> AST lowering -> semantic analysis -> bytecode VM
+                                                      \-> optimization -> IR -> C -> executable
 ```
-Source (.py)  →  Tokens  →  AST  →  Semantic Check  →  Optimize  →  IR  →  output.c  →  executable
-```
 
----
+## Supported v1 subset
 
-## Quick Start
+- Integer, float, bool, and string literals
+- Variable assignment and augmented assignment
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Boolean expressions: `and`, `or`, `not`
+- `if` / `elif` / `else`
+- `while`
+- VM-only `for` loops over `range(...)`
+- Top-level function definitions, calls, returns, recursion, and forward references
+- VM-only list and tuple literals
+- VM-only indexing for lists, tuples, and strings
+- VM-only `len(...)` for lists, tuples, and strings
+- VM-only top-level classes with instance fields, attributes, and methods
+- VM-only `range(...)`
+- VM-only local module imports via `import name` and `from name import symbol`
+- VM-only nested functions with closure capture
+- VM-only basic `raise` and bare `try/except`
+- `print(expr)`
+- Single-file native compilation
+
+## Explicitly unsupported in v1
+
+- decorators
+- default arguments, keyword arguments, and annotations
+- full Python runtime semantics
+
+Current boundary:
+- VM execution supports `for` loops over `range(...)` for the current subset
+- VM execution supports list/tuple literals, indexing, and `len(...)`
+- VM execution supports top-level classes, instance attributes, and methods
+- VM execution supports local module resolution for the current subset
+- VM execution supports nested functions and lexical closure capture for the current subset
+- VM execution supports basic untyped exception handling for the current subset
+- native compilation still rejects imports and remains single-file only
+- native compilation still rejects lists, tuples, indexing, and `len(...)`
+- native compilation still rejects classes, attributes, and methods
+- native compilation still rejects nested functions/closures
+- native compilation still rejects exceptions
+- native compilation still rejects `for` loops
+
+Unsupported features fail compilation with structured diagnostics.
+
+## Usage
 
 ```bash
-# 1. Install dependencies
-pip3 install ply graphviz
-brew install graphviz          # macOS (for AST diagram PNG)
+# Install in editable mode
+pip install -e .
 
-# 2. Run the built-in demo
-python3 main.py
-
-# 3. Compile a source file
+# Run through the VM (default)
 python3 main.py test_input.py
 
-# 4. Compile AND auto-run via GCC
-python3 main.py test_input.py --run
+# Check only
+python3 main.py test_input.py --check
 
-# 5. Skip the AST diagram
-python3 main.py test_input.py --no-viz --run
+# Compile to native C artifacts
+python3 main.py test_input.py --compile-native
 
-# 6. Manually compile the generated C
-gcc output.c -o output -lm && ./output
+# Compile and run natively
+python3 main.py test_booleans.py --run --no-viz
+
+# Quiet mode for automation
+python3 main.py test_input.py --compile-native --no-viz -q
+
+# Debug dumps
+python3 main.py test_input.py --dump tokens
+python3 main.py test_input.py --dump bytecode
+python3 main.py test_input.py --compile-native --dump ir
+
+# Module / installed entrypoint
+python3 -m compiler test_input.py
+python-subset-compiler test_input.py
 ```
 
----
+The `--no-viz` flag is kept for CLI compatibility but AST visualization is no longer part of the active architecture.
 
-## Project Structure
+## Project shape
 
-```
-compiler project/
-├── lexer.py            Stage 1 — Tokenizer (PLY lex + token filter)
-├── parser.py           Stage 2 — LALR(1) Parser → AST (PLY yacc)
-├── ast_nodes.py        Stage 3 — AST node class definitions
-├── semantic.py         Stage 4 — Scoped symbol table + validation
-├── optimizer.py        Stage 5 — Constant folding + dead code removal
-├── ir.py               Stage 6 — Three-address code (3AC) generator
-├── codegen.py          Stage 7 — C code emitter
-├── ast_viz.py          Bonus  — Graphviz AST diagram generator
-├── main.py             Entry point — runs the full pipeline
-├── test_input.py       Test: all features combined
-├── test_functions.py   Test: function definitions & calls
-├── test_control_flow.py Test: if/else, while, comparisons
-├── test_optimizer.py   Test: constant folding & dead code
-├── output.c            Generated C code (auto-created)
-├── ast_output.png      AST diagram (auto-created)
-└── README.md
-```
+- `main.py`: compatibility entrypoint
+- `compiler/frontend`: source handling, lexer, parser, CST, and AST lowering
+- `compiler/semantic`: symbol collection, binding resolution, type checking, and control-flow checks
+- `compiler/vm`: bytecode lowering and VM execution
+- `compiler/optimizer`: safe AST-level folding
+- `compiler/ir`: CFG-based lowering with explicit basic blocks and branch terminators
+- `compiler/backend`: native C code generation
+- `compiler/runtime`: emitted native runtime support files
+- `compiler/cli`: command-line entrypoint
+- `run_tests.py`: integration and negative test suite
 
----
+## Test suite
 
-## Language Features
-
-| Feature                  | Syntax                           | Example                        |
-|--------------------------|----------------------------------|--------------------------------|
-| Variable assignment      | `name = expr`                    | `x = 10`                      |
-| Arithmetic               | `+ - * / %`                      | `result = a + b * 2`          |
-| Operator precedence      | Standard math rules              | `2 + 3 * 4 → 14`             |
-| Parenthesised grouping   | `(expr)`                         | `(2 + 3) * 4 → 20`           |
-| Comparisons              | `== != < > <= >=`                | `if x > 5 { ... }`           |
-| Unary minus              | `-expr`                          | `y = -x`                      |
-| If / else                | `if cond { ... } else { ... }`   | See below                     |
-| While loops              | `while cond { ... }`             | See below                     |
-| Function definitions     | `def name(params) { ... }`       | `def add(a, b) { return a+b }`|
-| Function calls           | `name(args)`                     | `result = add(1, 2)`          |
-| Return                   | `return expr`                    | `return x * 2`                |
-| Print (numbers)          | `print(expr)`                    | `print(total)`                |
-| Print (strings)          | `print("text")`                  | `print("hello world")`        |
-| Float literals           | `3.14`                           | `pi = 3.14`                   |
-| Comments                 | `# comment`                      | `# this is ignored`           |
-
-### Example Program
-
-```python
-# Factorial using a while loop
-def factorial(n) {
-    result = 1
-    while n > 1 {
-        result = result * n
-        n = n - 1
-    }
-    return result
-}
-
-x = factorial(5)
-print(x)
-print("done!")
-```
-
----
-
-## Pipeline Overview
-
-### Stage 1 — Lexer (PLY lex)
-Reads source character by character → flat token stream.
-Includes a **token filter** that cleans up newlines around braces
-and `else` keywords so the parser grammar stays simple.
-
-### Stage 2 — Parser (PLY yacc / LALR)
-Consumes tokens → builds a hierarchical AST.
-Operator precedence handled by PLY's precedence table.
-
-### Stage 3 — Semantic Analysis
-Walks the AST with a **scoped symbol table** (stack of scopes).
-Checks: undefined variables, undefined functions, parameter count mismatches.
-
-### Stage 4 — Optimizer
-**Constant folding**: `2 + 3 * 4` → `14` at compile time.
-**Dead code elimination**: statements after `return` are dropped.
-
-### Stage 5 — IR Generation (Three-Address Code)
-Converts AST into flat instructions with structured markers for
-control flow. Example:
-```
-t1 = a + b
-total = t1
-t2 = x > 10
-IF t2 {
-  PRINT x
-} ELSE {
-  PRINT 0.0
-}
-```
-
-### Stage 6 — C Code Generation
-Translates IR → valid C source file with:
-- `#include <stdio.h>` / `<math.h>`
-- Forward declarations for user functions
-- All variables declared as `double`
-- `print()` → `printf("%g\n", ...)`
-- Structured `if/else`, `while` blocks
-
-### Bonus — AST Visualisation (Graphviz)
-Renders a colour-coded PNG diagram of the AST tree.
-Node types get distinct shapes and colours:
-- **Diamond** = if/while, **Box3D** = function, **Ellipse** = operators
-- **Circle** = literals/variables, **Note** = strings
-
----
-
-## Output Files
-
-| File             | Description                              |
-|------------------|------------------------------------------|
-| `output.c`       | Generated C source (always produced)     |
-| `ast_output.png` | AST tree diagram (when graphviz present) |
-
----
-
-## Note on VS Code Warnings
-
-The test files (`.py`) use our **mini-language syntax** (brace-delimited blocks),
-not standard Python. VS Code's Python linter will flag them as syntax errors —
-**this is expected and harmless**. The files compile correctly through our compiler.
-
----
-
-## Test Suite
-
-Run all tests with `--run` to auto-compile and execute:
+Run unit and integration coverage with:
 
 ```bash
-python3 main.py test_input.py --run --no-viz
-python3 main.py test_functions.py --run --no-viz
-python3 main.py test_control_flow.py --run --no-viz
-python3 main.py test_optimizer.py --run --no-viz
+python3 -m unittest discover -s tests -v
+python3 run_tests.py
 ```
+
+The suite covers:
+
+- successful compilation and execution for valid subset programs
+- VM execution for the current language surface
+- VM execution for `for` loops over `range(...)`
+- VM execution for list/tuple literals, indexing, and `len(...)`
+- VM execution for top-level classes, attributes, and methods
+- VM execution for local imports, closures, and basic exceptions
+- short-circuit correctness
+- forward references and recursion
+- compile-time rejection of unsupported syntax and mixed invalid operations
+- CLI VM and native modes
+
+GitHub Actions CI is defined in `.github/workflows/ci.yml` and runs both suites on Python 3.10 and 3.11.

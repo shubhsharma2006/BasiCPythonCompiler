@@ -1,37 +1,20 @@
-# test_optimizer.py — Tests the constant folding optimizer
+print(2 + 3)
+print(10 * 5)
+print(100 - 30)
+print(100 / 4)
+print(10 * (2 + 3))
 
-# All of these should be folded at compile time
-a = 2 + 3
-b = 10 * 5
-c = 100 - 30
-d = 50 / 2
-
-# Nested constant expressions
-e = (2 + 3) * (4 + 6)
-
-# Mixed: only the constant part folds
 x = 7
-f = x + 2 * 3
+print(x + 2 * 3)
 
-# Comparison folding
-g = 5 > 3
-h = 10 == 10
+print(10 > 3)
+print(1 == 1)
 
-print(a)
-print(b)
-print(c)
-print(d)
-print(e)
-print(f)
-print(g)
-print(h)
 
-# Dead code elimination test
-def test_dead_code(n) {
-    return n * 2
-}
+def early_return():
+    return 42
+    print(0)
 
-result = test_dead_code(21)
-print(result)
 
+print(early_return())
 print("Optimizer test done!")

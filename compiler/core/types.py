@@ -1,64 +1,61 @@
-"""
-types.py — Type system for the compiler.
-Defines type objects used in semantic analysis and type checking.
-"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
 
 
-class Type:
-    """Base class for all types."""
-    def __eq__(self, other):
-        return type(self) == type(other)
-    def __hash__(self):
-        return hash(type(self).__name__)
-    def __repr__(self):
-        return self.__class__.__name__
+class ValueType(str, Enum):
+    INT = "int"
+    FLOAT = "float"
+    BOOL = "bool"
+    STRING = "str"
+    LIST = "list"
+    TUPLE = "tuple"
+    VOID = "void"
+    UNKNOWN = "unknown"
 
 
-class IntType(Type):
-    """Integer type (maps to C int/double)."""
-    pass
-
-class FloatType(Type):
-    """Float type (maps to C double)."""
-    pass
-
-class BoolType(Type):
-    """Boolean type (maps to C int: 0/1)."""
-    pass
-
-class StringType(Type):
-    """String type (maps to C char*)."""
-    pass
-
-class VoidType(Type):
-    """Void type (for functions with no return)."""
-    pass
-
-class FunctionType(Type):
-    """Function type: stores parameter types and return type."""
-    def __init__(self, param_types, return_type):
-        self.param_types = param_types
-        self.return_type = return_type
-
-    def __repr__(self):
-        params = ', '.join(str(p) for p in self.param_types)
-        return f'({params}) -> {self.return_type}'
+@dataclass
+class FunctionType:
+    name: str
+    param_names: list[str]
+    param_types: list[ValueType]
+    return_type: ValueType = ValueType.UNKNOWN
+    state: str = "unvisited"
+    reachable: bool = False
+    node: object | None = None
+    local_types: dict[str, ValueType] = field(default_factory=dict)
 
 
-# Singleton instances for convenience
-INT = IntType()
-FLOAT = FloatType()
-BOOL = BoolType()
-STRING = StringType()
-VOID = VoidType()
+def is_numeric(value_type: ValueType) -> bool:
+    return value_type in (ValueType.INT, ValueType.FLOAT)
 
 
-def is_numeric(t):
-    """Check if a type is numeric (int or float)."""
-    return isinstance(t, (IntType, FloatType))
+def can_truth_test(value_type: ValueType) -> bool:
+    return value_type in (ValueType.BOOL, ValueType.INT, ValueType.FLOAT)
 
-def common_type(a, b):
-    """Return the wider numeric type (int+float → float)."""
-    if isinstance(a, FloatType) or isinstance(b, FloatType):
-        return FLOAT
-    return INT
+
+def merge_types(left: ValueType, right: ValueType) -> ValueType | None:
+    if left == ValueType.UNKNOWN:
+        return right
+    if right == ValueType.UNKNOWN:
+        return left
+    if left == right:
+        return left
+    if is_numeric(left) and is_numeric(right):
+        if ValueType.FLOAT in (left, right):
+            return ValueType.FLOAT
+        return ValueType.INT
+    return None
+
+
+def c_type_name(value_type: ValueType) -> str:
+    if value_type == ValueType.FLOAT:
+        return "double"
+    if value_type in (ValueType.INT, ValueType.BOOL):
+        return "int"
+    if value_type == ValueType.STRING:
+        return "const char *"
+    if value_type == ValueType.VOID:
+        return "void"
+    return "double"

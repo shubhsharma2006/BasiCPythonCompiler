@@ -1,0 +1,101 @@
+import unittest
+
+from compiler.frontend import lex_source, lower_cst, parse_tokens
+from compiler.utils.error_handler import ErrorHandler
+
+
+class FrontendTests(unittest.TestCase):
+    def frontend(self, source: str):
+        errors = ErrorHandler(source, "test_case.py")
+        lexed = lex_source(source, "test_case.py", errors)
+        parsed = parse_tokens(lexed, errors) if lexed is not None else None
+        program = lower_cst(parsed, errors) if parsed is not None else None
+        return lexed, parsed, program, errors
+
+    def test_parses_valid_python_subset(self):
+        lexed, parsed, program, errors = self.frontend(
+            "x = 1\n"
+            "def add(a, b):\n"
+            "    return a + b\n"
+            "if x > 0:\n"
+            "    print(add(x, 2))\n"
+        )
+        self.assertIsNotNone(lexed)
+        self.assertIsNotNone(parsed)
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+        self.assertEqual(len(program.body), 3)
+        self.assertGreater(len(lexed.tokens), 0)
+
+    def test_lowers_import_statements(self):
+        _, _, program, errors = self.frontend("import math\nfrom util import add\n")
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+        self.assertEqual(len(program.body), 2)
+
+    def test_lowers_nested_function(self):
+        _, _, program, errors = self.frontend(
+            "def outer(x):\n"
+            "    def inner(y):\n"
+            "        return y\n"
+            "    return inner(x)\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lowers_try_and_raise(self):
+        _, _, program, errors = self.frontend(
+            "try:\n"
+            "    raise \"boom\"\n"
+            "except:\n"
+            "    print(\"handled\")\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+        self.assertEqual(len(program.body), 1)
+
+    def test_lowers_for_range_loop(self):
+        _, _, program, errors = self.frontend(
+            "for i in range(3):\n"
+            "    print(i)\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+        self.assertEqual(len(program.body), 1)
+
+    def test_lowers_list_tuple_and_indexing(self):
+        _, _, program, errors = self.frontend(
+            "items = [1, 2, 3]\n"
+            "pair = (4, 5)\n"
+            "print(items[1])\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+        self.assertEqual(len(program.body), 3)
+
+    def test_lowers_class_methods_and_attributes(self):
+        _, _, program, errors = self.frontend(
+            "class Counter:\n"
+            "    def __init__(self, start):\n"
+            "        self.value = start\n"
+            "    def inc(self):\n"
+            "        self.value = self.value + 1\n"
+            "        return self.value\n"
+            "counter = Counter(2)\n"
+            "print(counter.inc())\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lexer_emits_python_tokens(self):
+        errors = ErrorHandler("x = 1 + 2\n", "tokens.py")
+        lexed = lex_source("x = 1 + 2\n", "tokens.py", errors)
+        self.assertIsNotNone(lexed)
+        self.assertFalse(errors.has_errors(), errors.render())
+        kinds = [token.kind for token in lexed.tokens[:5]]
+        self.assertIn("NAME", kinds)
+        self.assertIn("NUMBER", kinds)
+
+
+if __name__ == "__main__":
+    unittest.main()

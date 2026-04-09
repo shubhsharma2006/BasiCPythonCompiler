@@ -1,0 +1,448 @@
+from __future__ import annotations
+
+import ast
+
+from compiler.core.ast import (
+    AssignStmt,
+    AttributeAssignStmt,
+    AttributeExpr,
+    BinaryExpr,
+    BoolOpExpr,
+    CallExpr,
+    ClassDef,
+    CompareExpr,
+    ConstantExpr,
+    ExceptHandler,
+    ExprStmt,
+    ForStmt,
+    FromImportStmt,
+    FunctionDef,
+    IfStmt,
+    ImportStmt,
+    IndexExpr,
+    ListExpr,
+    MethodCallExpr,
+    NameExpr,
+    PrintStmt,
+    Program,
+    RaiseStmt,
+    ReturnStmt,
+    SourceSpan,
+    TryStmt,
+    TupleExpr,
+    UnaryExpr,
+    WhileStmt,
+)
+from compiler.frontend.cst import ParsedModule
+from compiler.utils.error_handler import ErrorHandler
+
+
+class PythonSubsetLowerer:
+    def __init__(self, errors: ErrorHandler):
+        self.errors = errors
+        self._function_depth = 0
+
+    def lower(self, module: ParsedModule) -> Program | None:
+        body = self._lower_body(module.syntax_tree.body, allow_docstring=True)
+        if body is None or self.errors.has_errors():
+            return None
+        return Program(span=self._span(module.syntax_tree), body=body)
+
+    def _lower_body(self, statements: list[ast.stmt], allow_docstring: bool = False) -> list | None:
+        lowered = []
+        for index, statement in enumerate(statements):
+            if allow_docstring and index == 0 and self._is_docstring(statement):
+                continue
+            item = self._lower_statement(statement)
+            if isinstance(item, list):
+                lowered.extend(node for node in item if node is not None)
+            elif item is not None:
+                lowered.append(item)
+        return lowered
+
+    def _lower_statement(self, node: ast.stmt):
+        if isinstance(node, ast.Assign):
+            if len(node.targets) != 1:
+                self._unsupported(node, "only single-target assignment is supported")
+                return None
+            target = node.targets[0]
+            value = self._lower_expr(node.value)
+            if value is None:
+                return None
+            if isinstance(target, ast.Name):
+                return AssignStmt(span=self._span(node), name=target.id, value=value)
+            if isinstance(target, ast.Attribute):
+                obj = self._lower_expr(target.value)
+                if obj is None:
+                    return None
+                return AttributeAssignStmt(span=self._span(node), object=obj, attr_name=target.attr, value=value)
+            self._unsupported(node, "only simple name or attribute assignment is supported")
+            return None
+
+        if isinstance(node, ast.AugAssign):
+            if not isinstance(node.target, ast.Name):
+                self._unsupported(node, "only simple name augmented assignment is supported")
+                return None
+            operator = self._binop_symbol(node.op)
+            if operator is None:
+                self._unsupported(node, "unsupported augmented assignment operator")
+                return None
+            right = self._lower_expr(node.value)
+            if right is None:
+                return None
+            left = NameExpr(span=self._span(node.target), name=node.target.id)
+            value = BinaryExpr(span=self._span(node), op=operator, left=left, right=right)
+            return AssignStmt(span=self._span(node), name=node.target.id, value=value)
+
+        if isinstance(node, ast.Expr):
+            if self._is_docstring(node):
+                return None
+            if self._is_print_call(node.value):
+                value = self._lower_expr(node.value.args[0])
+                if value is None:
+                    return None
+                return PrintStmt(span=self._span(node), value=value)
+            expr = self._lower_expr(node.value)
+            if expr is None:
+                return None
+            return ExprStmt(span=self._span(node), expr=expr)
+
+        if isinstance(node, ast.If):
+            condition = self._lower_expr(node.test)
+            if condition is None:
+                return None
+            body = self._lower_body(node.body, allow_docstring=True) or []
+            orelse = self._lower_body(node.orelse, allow_docstring=True) or []
+            return IfStmt(span=self._span(node), condition=condition, body=body, orelse=orelse)
+
+        if isinstance(node, ast.While):
+            condition = self._lower_expr(node.test)
+            if condition is None:
+                return None
+            body = self._lower_body(node.body, allow_docstring=True) or []
+            return WhileStmt(span=self._span(node), condition=condition, body=body)
+
+        if isinstance(node, ast.For):
+            if node.orelse:
+                self._unsupported(node, "for/else is not supported yet")
+                return None
+            if not isinstance(node.target, ast.Name):
+                self._unsupported(node, "only simple name loop targets are supported")
+                return None
+            iterator = self._lower_expr(node.iter)
+            if iterator is None:
+                return None
+            body = self._lower_body(node.body, allow_docstring=True) or []
+            return ForStmt(span=self._span(node), target=node.target.id, iterator=iterator, body=body)
+
+        if isinstance(node, ast.FunctionDef):
+            if node.decorator_list:
+                self._unsupported(node, "decorators are not supported")
+                return None
+            if node.returns is not None:
+                self._unsupported(node, "function return annotations are not supported")
+                return None
+            if node.args.posonlyargs or node.args.kwonlyargs or node.args.vararg or node.args.kwarg:
+                self._unsupported(node, "only simple positional parameters are supported")
+                return None
+            if any(arg.annotation is not None for arg in node.args.args):
+                self._unsupported(node, "parameter annotations are not supported")
+                return None
+            if node.args.defaults:
+                self._unsupported(node, "default parameter values are not supported")
+                return None
+            self._function_depth += 1
+            body = self._lower_body(node.body, allow_docstring=True) or []
+            self._function_depth -= 1
+            return FunctionDef(
+                span=self._span(node),
+                name=node.name,
+                params=[arg.arg for arg in node.args.args],
+                body=body,
+            )
+
+        if isinstance(node, ast.ClassDef):
+            if self._function_depth > 0:
+                self._unsupported(node, "nested classes are not supported yet")
+                return None
+            if node.decorator_list:
+                self._unsupported(node, "class decorators are not supported")
+                return None
+            if node.bases or node.keywords:
+                self._unsupported(node, "class inheritance is not supported yet")
+                return None
+            methods = []
+            for child in node.body:
+                if self._is_docstring(child) or isinstance(child, ast.Pass):
+                    continue
+                if not isinstance(child, ast.FunctionDef):
+                    self._unsupported(child, "class bodies may only contain methods")
+                    return None
+                lowered = self._lower_statement(child)
+                if lowered is None or not isinstance(lowered, FunctionDef):
+                    return None
+                methods.append(lowered)
+            return ClassDef(span=self._span(node), name=node.name, methods=methods)
+
+        if isinstance(node, ast.Import):
+            lowered = []
+            for alias in node.names:
+                if "." in alias.name:
+                    self._unsupported(node, "dotted import targets are not supported yet")
+                    return None
+                lowered.append(ImportStmt(span=self._span(node), module=alias.name, alias=alias.asname))
+            return lowered
+
+        if isinstance(node, ast.ImportFrom):
+            if node.level != 0:
+                self._unsupported(node, "relative imports are not supported")
+                return None
+            if node.module is None:
+                self._unsupported(node, "missing import module is not supported")
+                return None
+            lowered = []
+            for alias in node.names:
+                if alias.name == "*":
+                    self._unsupported(node, "star imports are not supported")
+                    return None
+                lowered.append(
+                    FromImportStmt(
+                        span=self._span(node),
+                        module=node.module,
+                        name=alias.name,
+                        alias=alias.asname,
+                    )
+                )
+            return lowered
+
+        if isinstance(node, ast.Return):
+            value = self._lower_expr(node.value) if node.value is not None else None
+            return ReturnStmt(span=self._span(node), value=value)
+
+        if isinstance(node, ast.Raise):
+            if node.exc is None:
+                self._unsupported(node, "bare re-raise is not supported")
+                return None
+            if node.cause is not None:
+                self._unsupported(node, "raise ... from ... is not supported")
+                return None
+            value = self._lower_expr(node.exc)
+            if value is None:
+                return None
+            return RaiseStmt(span=self._span(node), value=value)
+
+        if isinstance(node, ast.Try):
+            if node.finalbody:
+                self._unsupported(node, "try/finally is not supported yet")
+                return None
+            if node.orelse:
+                self._unsupported(node, "try/else is not supported yet")
+                return None
+            if not node.handlers:
+                self._unsupported(node, "try without except handlers is not supported")
+                return None
+            handlers = []
+            for handler in node.handlers:
+                if handler.type is not None:
+                    self._unsupported(handler, "typed except handlers are not supported yet")
+                    return None
+                if handler.name is not None:
+                    self._unsupported(handler, "except ... as name is not supported yet")
+                    return None
+                lowered_body = self._lower_body(handler.body, allow_docstring=True) or []
+                handlers.append(ExceptHandler(span=self._span(handler), body=lowered_body))
+            body = self._lower_body(node.body, allow_docstring=True) or []
+            return TryStmt(span=self._span(node), body=body, handlers=handlers)
+
+        self._unsupported(node, f"{type(node).__name__} is not supported")
+        return None
+
+    def _lower_expr(self, node: ast.expr):
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool):
+                return ConstantExpr(span=self._span(node), value=node.value)
+            if isinstance(node.value, int):
+                return ConstantExpr(span=self._span(node), value=node.value)
+            if isinstance(node.value, float):
+                return ConstantExpr(span=self._span(node), value=node.value)
+            if isinstance(node.value, str):
+                return ConstantExpr(span=self._span(node), value=node.value)
+            self._unsupported(node, f"constant {node.value!r} is not supported")
+            return None
+
+        if isinstance(node, ast.Name):
+            return NameExpr(span=self._span(node), name=node.id)
+
+        if isinstance(node, ast.BinOp):
+            operator = self._binop_symbol(node.op)
+            if operator is None:
+                self._unsupported(node, "unsupported binary operator")
+                return None
+            left = self._lower_expr(node.left)
+            right = self._lower_expr(node.right)
+            if left is None or right is None:
+                return None
+            return BinaryExpr(span=self._span(node), op=operator, left=left, right=right)
+
+        if isinstance(node, ast.UnaryOp):
+            operator = self._unary_symbol(node.op)
+            if operator is None:
+                self._unsupported(node, "unsupported unary operator")
+                return None
+            operand = self._lower_expr(node.operand)
+            if operand is None:
+                return None
+            return UnaryExpr(span=self._span(node), op=operator, operand=operand)
+
+        if isinstance(node, ast.BoolOp):
+            operator = self._boolop_symbol(node.op)
+            if operator is None:
+                self._unsupported(node, "unsupported boolean operator")
+                return None
+            values = [self._lower_expr(value) for value in node.values]
+            if any(value is None for value in values):
+                return None
+            expr = values[0]
+            for value in values[1:]:
+                expr = BoolOpExpr(span=self._span(node), op=operator, left=expr, right=value)
+            return expr
+
+        if isinstance(node, ast.Compare):
+            if len(node.ops) != 1 or len(node.comparators) != 1:
+                self._unsupported(node, "comparison chaining is not supported")
+                return None
+            operator = self._compare_symbol(node.ops[0])
+            if operator is None:
+                self._unsupported(node, "unsupported comparison operator")
+                return None
+            left = self._lower_expr(node.left)
+            right = self._lower_expr(node.comparators[0])
+            if left is None or right is None:
+                return None
+            return CompareExpr(span=self._span(node), op=operator, left=left, right=right)
+
+        if isinstance(node, ast.Call):
+            if node.keywords:
+                self._unsupported(node, "keyword arguments are not supported")
+                return None
+            if isinstance(node.func, ast.Name) and node.func.id == "print":
+                if len(node.args) != 1:
+                    self._unsupported(node, "print() expects exactly one argument")
+                    return None
+                arg = self._lower_expr(node.args[0])
+                if arg is None:
+                    return None
+                return CallExpr(span=self._span(node), func_name="print", args=[arg])
+            args = [self._lower_expr(arg) for arg in node.args]
+            if any(arg is None for arg in args):
+                return None
+            if isinstance(node.func, ast.Name):
+                return CallExpr(span=self._span(node), func_name=node.func.id, args=args)
+            if isinstance(node.func, ast.Attribute):
+                obj = self._lower_expr(node.func.value)
+                if obj is None:
+                    return None
+                return MethodCallExpr(span=self._span(node), object=obj, method_name=node.func.attr, args=args)
+            self._unsupported(node, "only direct function calls and attribute method calls are supported")
+            return None
+
+        if isinstance(node, ast.List):
+            elements = [self._lower_expr(element) for element in node.elts]
+            if any(element is None for element in elements):
+                return None
+            return ListExpr(span=self._span(node), elements=elements)
+
+        if isinstance(node, ast.Tuple):
+            elements = [self._lower_expr(element) for element in node.elts]
+            if any(element is None for element in elements):
+                return None
+            return TupleExpr(span=self._span(node), elements=elements)
+
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.slice, ast.Slice):
+                self._unsupported(node, "slices are not supported yet")
+                return None
+            collection = self._lower_expr(node.value)
+            index = self._lower_expr(node.slice)
+            if collection is None or index is None:
+                return None
+            return IndexExpr(span=self._span(node), collection=collection, index=index)
+
+        if isinstance(node, ast.Attribute):
+            obj = self._lower_expr(node.value)
+            if obj is None:
+                return None
+            return AttributeExpr(span=self._span(node), object=obj, attr_name=node.attr)
+
+        self._unsupported(node, f"expression {type(node).__name__} is not supported")
+        return None
+
+    @staticmethod
+    def _is_print_call(node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and not node.keywords
+            and len(node.args) == 1
+        )
+
+    @staticmethod
+    def _is_docstring(node: ast.stmt) -> bool:
+        return isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) and isinstance(node.value.value, str)
+
+    @staticmethod
+    def _binop_symbol(operator: ast.AST) -> str | None:
+        mapping = {
+            ast.Add: "+",
+            ast.Sub: "-",
+            ast.Mult: "*",
+            ast.Div: "/",
+            ast.Mod: "%",
+        }
+        return mapping.get(type(operator))
+
+    @staticmethod
+    def _unary_symbol(operator: ast.AST) -> str | None:
+        mapping = {
+            ast.USub: "-",
+            ast.Not: "not",
+        }
+        return mapping.get(type(operator))
+
+    @staticmethod
+    def _boolop_symbol(operator: ast.AST) -> str | None:
+        mapping = {
+            ast.And: "and",
+            ast.Or: "or",
+        }
+        return mapping.get(type(operator))
+
+    @staticmethod
+    def _compare_symbol(operator: ast.AST) -> str | None:
+        mapping = {
+            ast.Eq: "==",
+            ast.NotEq: "!=",
+            ast.Lt: "<",
+            ast.LtE: "<=",
+            ast.Gt: ">",
+            ast.GtE: ">=",
+        }
+        return mapping.get(type(operator))
+
+    def _unsupported(self, node: ast.AST, message: str) -> None:
+        span = self._span(node)
+        self.errors.error("Frontend", message, span.line, span.column, span.end_line, span.end_column)
+
+    @staticmethod
+    def _span(node: ast.AST) -> SourceSpan:
+        return SourceSpan(
+            line=getattr(node, "lineno", 1),
+            column=getattr(node, "col_offset", 0),
+            end_line=getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+            end_column=getattr(node, "end_col_offset", getattr(node, "col_offset", 0) + 1),
+        )
+
+
+def lower_cst(module: ParsedModule, errors: ErrorHandler) -> Program | None:
+    return PythonSubsetLowerer(errors).lower(module)

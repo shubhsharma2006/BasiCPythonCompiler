@@ -1,157 +1,373 @@
 #!/usr/bin/env python3
-"""
-run_tests.py — Automated Test Runner
-======================================
-Compiles each test file, runs the generated C, and compares output
-against expected values. Reports pass/fail with a summary.
 
-Usage:
-    python3 run_tests.py           # run all tests
-    python3 run_tests.py -v        # verbose (show compiler output)
-"""
-
+import os
 import subprocess
 import sys
-import os
+import tempfile
 
-# ── Test definitions: (file, expected_output_lines) ────────────
 
 TESTS = [
     {
-        'name': 'Arithmetic & Basic Features',
-        'file': 'test_input.py',
-        'expected': [
-            '14', '6', '40', '2.5',        # a+b, a-b, a*b, a/b
-            '14', '20',                     # precedence, grouping
-            '25', '30',                     # square(5), add(10,20)
-            '42',                           # if x>10
-            '3', '2', '1',                  # while countdown
-            '600',                          # constant folding
-            'All tests passed!',
+        "name": "Arithmetic & Basic Features",
+        "file": "test_input.py",
+        "expected": [
+            "14",
+            "6",
+            "40",
+            "2.5",
+            "14",
+            "20",
+            "25",
+            "30",
+            "42",
+            "3",
+            "2",
+            "1",
+            "600",
+            "All tests passed!",
         ],
     },
     {
-        'name': 'Function Definitions & Calls',
-        'file': 'test_functions.py',
-        'expected': [
-            '42',                           # multiply(6,7)
-            '17',                           # add(multiply(3,4), 5)
-            '16',                           # compute(2,3,10)
-            '15',                           # multiply(2+3, 4-1)
-            'Functions test done!',
+        "name": "Function Definitions & Calls",
+        "file": "test_functions.py",
+        "expected": [
+            "42",
+            "17",
+            "16",
+            "15",
+            "Functions test done!",
         ],
     },
     {
-        'name': 'Control Flow (if/else/while)',
-        'file': 'test_control_flow.py',
-        'expected': [
-            '1',                            # if x>10
-            '2',                            # else branch
-            '3',                            # nested if/else
-            '15',                           # sum 1..5
-            '4',                            # a == b
-            '5',                            # a != 20
-            'Control flow test done!',
+        "name": "Control Flow",
+        "file": "test_control_flow.py",
+        "expected": [
+            "1",
+            "2",
+            "3",
+            "15",
+            "4",
+            "5",
+            "Control flow test done!",
         ],
     },
     {
-        'name': 'Optimizer (Constant Folding)',
-        'file': 'test_optimizer.py',
-        'expected': [
-            '5', '50', '70', '25', '50',   # folded constants
-            '13',                           # x + 2*3 (partial fold)
-            '1', '1',                       # comparison folding
-            '42',                           # dead code func
-            'Optimizer test done!',
+        "name": "Optimizer Coverage",
+        "file": "test_optimizer.py",
+        "expected": [
+            "5",
+            "50",
+            "70",
+            "25",
+            "50",
+            "13",
+            "1",
+            "1",
+            "42",
+            "Optimizer test done!",
         ],
     },
     {
-        'name': 'Advanced Features (elif, +=, nested)',
-        'file': 'test_advanced.py',
-        'expected': [
-            '15',                           # counter += 5
-            '13',                           # counter -= 2
-            '26',                           # counter *= 2
-            '13',                           # counter /= 2
-            'medium',                       # elif branch
-            '55',                           # sum 1..10 via while + +=
-            '120',                          # factorial(5) recursive
-            'Advanced tests passed!',
+        "name": "Advanced Features",
+        "file": "test_advanced.py",
+        "expected": [
+            "15",
+            "13",
+            "26",
+            "13",
+            "medium",
+            "55",
+            "120",
+            "1",
+            "1",
+            "Advanced tests passed!",
+        ],
+    },
+    {
+        "name": "Booleans & Short-Circuit",
+        "file": "test_booleans.py",
+        "expected": [
+            "1",
+            "0",
+            "0",
+            "1",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "booleans done!",
         ],
     },
 ]
 
-# ── ANSI colours ───────────────────────────────────────────────
 
-GR = '\033[92m'; RD = '\033[91m'; YL = '\033[93m'; CY = '\033[96m'
-B  = '\033[1m';  R  = '\033[0m';  DM = '\033[2m'
+SOURCE_TESTS = [
+    {
+        "name": "Forward function references",
+        "source": """result = use_later(5)\nprint(result)\n\n\ndef use_later(x):\n    return x + 7\n""",
+        "expected": ["12"],
+    },
+    {
+        "name": "Mutual recursion",
+        "source": """def is_even(n):\n    if n == 0:\n        return True\n    return is_odd(n - 1)\n\n\ndef is_odd(n):\n    if n == 0:\n        return False\n    return is_even(n - 1)\n\n\nprint(is_even(6))\nprint(is_odd(7))\n""",
+        "expected": ["1", "1"],
+    },
+    {
+        "name": "Local module import",
+        "source": """from helper import add\nprint(add(4, 5))\n""",
+        "extra_files": {"helper.py": "def add(a, b):\n    return a + b\n"},
+        "expected": ["9"],
+    },
+    {
+        "name": "Closure capture",
+        "source": """def outer(x):\n    def inner(y):\n        return x + y\n    return inner(3)\n\nprint(outer(4))\n""",
+        "expected": ["7"],
+    },
+    {
+        "name": "For loop with range",
+        "source": """for i in range(1, 4):\n    print(i)\n""",
+        "expected": ["1", "2", "3"],
+    },
+    {
+        "name": "Lists tuples indexing and len",
+        "source": """items = [10, 20, 30]\npair = (4, 5)\nword = "hello"\nprint(len(items))\nprint(items[1])\nprint(pair[0])\nprint(word[1])\n""",
+        "expected": ["3", "20", "4", "e"],
+    },
+    {
+        "name": "Classes attributes and methods",
+        "source": """class Counter:\n    def __init__(self, start):\n        self.value = start\n    def inc(self):\n        self.value = self.value + 1\n        return self.value\n\ncounter = Counter(5)\nprint(counter.value)\nprint(counter.inc())\nprint(counter.value)\n""",
+        "expected": ["5", "6", "6"],
+    },
+    {
+        "name": "Basic try/except",
+        "source": """try:\n    raise "boom"\nexcept:\n    print("handled")\n""",
+        "expected": ["handled"],
+    },
+]
 
-# ── Test runner ────────────────────────────────────────────────
 
-def run_test(test, verbose=False):
-    """Compile a test file, run the output, check against expected."""
-    name = test['name']
-    src  = test['file']
-    expected = test['expected']
+NEGATIVE_TESTS = [
+    {
+        "name": "Reject missing modules",
+        "source": "from missing import add\nprint(add(1, 2))\n",
+        "expected_substring": "cannot resolve local module",
+    },
+    {
+        "name": "Reject mixed arithmetic",
+        "source": 'x = "a" + 1\n',
+        "expected_substring": "requires numeric operands",
+    },
+    {
+        "name": "Reject bad len argument",
+        "source": "print(len(1))\n",
+        "expected_substring": "len() expects a list, tuple, or string",
+    },
+    {
+        "name": "Reject bad range arity",
+        "source": "for i in range(1, 2, 3, 4):\n    print(i)\n",
+        "expected_substring": "range() expects 1 to 3 arguments",
+    },
+    {
+        "name": "Reject syntax errors",
+        "source": "x = 1 $ 2\n",
+        "expected_substring": "Syntax Error",
+    },
+    {
+        "name": "Reject wrong argument count",
+        "source": "def add(a, b):\n    return a + b\n\nprint(add(1))\n",
+        "expected_substring": "expects 2 arguments, got 1",
+    },
+    {
+        "name": "Reject unhandled exceptions",
+        "source": 'raise "boom"\n',
+        "expected_substring": "unhandled exception: boom",
+    },
+]
 
-    if not os.path.exists(src):
-        print(f'  {RD}✘ SKIP{R}  {name} — file {src!r} not found')
+
+GR = "\033[92m"
+RD = "\033[91m"
+CY = "\033[96m"
+B = "\033[1m"
+R = "\033[0m"
+DM = "\033[2m"
+
+
+def run_positive_test(test):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = os.path.join(temp_dir, "program.c")
+        executable_path = os.path.splitext(output_path)[0]
+        result = subprocess.run(
+            [sys.executable, "main.py", test["file"], "--run", "--no-viz", "-q", "-o", output_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  {RD}✘ FAIL{R}  {test['name']} — compiler error")
+            if result.stderr.strip():
+                print(f"    {DM}{result.stderr.strip()}{R}")
+            return False
+
+        run = subprocess.run([executable_path], capture_output=True, text=True)
+        actual_lines = run.stdout.strip().splitlines() if run.stdout.strip() else []
+        if actual_lines == test["expected"]:
+            print(f"  {GR}✔ PASS{R}  {test['name']}  {DM}({len(test['expected'])} checks){R}")
+            return True
+
+        print(f"  {RD}✘ FAIL{R}  {test['name']}")
+        for index, (expected, actual) in enumerate(zip(test["expected"], actual_lines), start=1):
+            if expected != actual:
+                print(f"    {RD}✘{R} line {index}: expected {expected!r}, got {actual!r}")
+        if len(actual_lines) != len(test["expected"]):
+            print(f"    Expected {len(test['expected'])} lines, got {len(actual_lines)}")
         return False
 
-    # Step 1: compile via our compiler
-    cmd = [sys.executable, 'main.py', src, '--run', '--no-viz', '-q']
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f'  {RD}✘ FAIL{R}  {name} — compiler error')
-        if verbose:
-            print(f'    {DM}{result.stderr.strip()}{R}')
+
+def run_negative_test(test):
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=".") as handle:
+        handle.write(test["source"])
+        temp_path = handle.name
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "main.py", temp_path, "--no-viz", "-q"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"  {RD}✘ FAIL{R}  {test['name']} — expected compilation failure")
+            return False
+        output = f"{result.stdout}\n{result.stderr}"
+        if test["expected_substring"] in output:
+            print(f"  {GR}✔ PASS{R}  {test['name']}")
+            return True
+        print(f"  {RD}✘ FAIL{R}  {test['name']} — missing diagnostic")
+        if output.strip():
+            print(f"    {DM}{output.strip()}{R}")
         return False
+    finally:
+        os.unlink(temp_path)
 
-    # Step 2: run the compiled binary
-    run = subprocess.run(['./output'], capture_output=True, text=True)
-    actual_lines = run.stdout.strip().split('\n') if run.stdout.strip() else []
 
-    # Step 3: compare
-    if actual_lines == expected:
-        print(f'  {GR}✔ PASS{R}  {name}  {DM}({len(expected)} checks){R}')
+def run_source_test(test):
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, dir=".") as handle:
+        handle.write(test["source"])
+        temp_path = handle.name
+
+    try:
+        temp_dir = os.path.dirname(temp_path)
+        created_files = []
+        for relative_path, contents in test.get("extra_files", {}).items():
+            full_path = os.path.join(temp_dir, relative_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as handle:
+                handle.write(contents)
+            created_files.append(full_path)
+
+        result = subprocess.run(
+            [sys.executable, "main.py", temp_path, "--no-viz", "-q"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  {RD}✘ FAIL{R}  {test['name']} — runtime error")
+            if result.stderr.strip():
+                print(f"    {DM}{result.stderr.strip()}{R}")
+            return False
+
+        actual_lines = result.stdout.strip().splitlines() if result.stdout.strip() else []
+        if actual_lines == test["expected"]:
+            print(f"  {GR}✔ PASS{R}  {test['name']}")
+            return True
+
+        print(f"  {RD}✘ FAIL{R}  {test['name']}")
+        print(f"    Expected {test['expected']!r}, got {actual_lines!r}")
+        return False
+    finally:
+        for full_path in locals().get("created_files", []):
+            if os.path.exists(full_path):
+                os.unlink(full_path)
+        os.unlink(temp_path)
+
+
+def run_cli_smoke():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = os.path.join(temp_dir, "program.c")
+        result = subprocess.run(
+            [sys.executable, "main.py", "test_input.py", "--compile-native", "--no-viz", "-q", "-o", output_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  {RD}✘ FAIL{R}  CLI compile-only")
+            return False
+        if not os.path.exists(output_path):
+            print(f"  {RD}✘ FAIL{R}  CLI compile-only — output file not created")
+            return False
+        print(f"  {GR}✔ PASS{R}  CLI compile-only")
         return True
-    else:
-        print(f'  {RD}✘ FAIL{R}  {name}')
-        for i, (exp, act) in enumerate(zip(expected, actual_lines)):
-            marker = f'{GR}✔{R}' if exp == act else f'{RD}✘{R}'
-            if exp != act:
-                print(f'    {marker} line {i+1}: expected {exp!r}, got {act!r}')
-        if len(actual_lines) != len(expected):
-            print(f'    Expected {len(expected)} lines, got {len(actual_lines)}')
-        return False
+
+
+def run_quiet_mode_smoke():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = os.path.join(temp_dir, "program.c")
+        result = subprocess.run(
+            [sys.executable, "main.py", "test_input.py", "--run", "--no-viz", "-q", "-o", output_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  {RD}✘ FAIL{R}  CLI quiet mode")
+            return False
+        if result.stdout.strip() or result.stderr.strip():
+            print(f"  {RD}✘ FAIL{R}  CLI quiet mode — expected no terminal output")
+            return False
+        print(f"  {GR}✔ PASS{R}  CLI quiet mode")
+        return True
 
 
 def main():
-    verbose = '-v' in sys.argv
-
-    print(f'\n{B}{CY}╔══════════════════════════════════════════════════════════╗')
-    print(f'║  Mini Python Compiler — Test Suite                       ║')
-    print(f'╚══════════════════════════════════════════════════════════╝{R}\n')
+    print(f"\n{B}{CY}╔══════════════════════════════════════════════════════════╗")
+    print("║  Python Subset Compiler — Test Suite                    ║")
+    print(f"╚══════════════════════════════════════════════════════════╝{R}\n")
 
     passed = 0
     failed = 0
 
     for test in TESTS:
-        if run_test(test, verbose):
+        if run_positive_test(test):
             passed += 1
         else:
             failed += 1
 
-    # Summary
-    total = passed + failed
-    print(f'\n{B}Results: {GR}{passed} passed{R}{B}, {RD if failed else GR}{failed} failed{R}{B}, {total} total{R}')
+    for test in NEGATIVE_TESTS:
+        if run_negative_test(test):
+            passed += 1
+        else:
+            failed += 1
 
-    if failed == 0:
-        print(f'{GR}{B}All tests passed! ✨{R}\n')
+    for test in SOURCE_TESTS:
+        if run_source_test(test):
+            passed += 1
+        else:
+            failed += 1
+
+    if run_cli_smoke():
+        passed += 1
     else:
-        print(f'{RD}{B}{failed} test(s) failed.{R}\n')
+        failed += 1
+
+    if run_quiet_mode_smoke():
+        passed += 1
+    else:
+        failed += 1
+
+    total = passed + failed
+    print(f"\n{B}Results: {GR}{passed} passed{R}{B}, {RD if failed else GR}{failed} failed{R}{B}, {total} total{R}")
+    if failed:
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

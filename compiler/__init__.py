@@ -1,3 +1,3 @@
-# compiler/__init__.py
-"""MiniPyC — Production-grade Mini Python Compiler."""
-__version__ = "2.0.0"
+from compiler.pipeline import CompilationResult, check_source, compile_source, execute_source
+
+__all__ = ["CompilationResult", "check_source", "compile_source", "execute_source"]
