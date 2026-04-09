@@ -74,7 +74,9 @@ class AttributeAssignStmt(Statement):
 
 @dataclass
 class PrintStmt(Statement):
-    value: Expression
+    values: list[Expression]
+    sep: Expression | None = None
+    end: Expression | None = None
 
 
 @dataclass
@@ -105,12 +107,15 @@ class ForStmt(Statement):
 @dataclass
 class ExceptHandler(Node):
     body: list[Statement]
+    type_name: str | None = None
+    name: str | None = None
 
 
 @dataclass
 class TryStmt(Statement):
     body: list[Statement]
     handlers: list[ExceptHandler]
+    finalbody: list[Statement] = field(default_factory=list)
 
 
 @dataclass
@@ -173,6 +178,17 @@ class ListExpr(Expression):
 
 @dataclass
 class TupleExpr(Expression):
+    elements: list[Expression]
+
+
+@dataclass
+class DictExpr(Expression):
+    keys: list[Expression]
+    values: list[Expression]
+
+
+@dataclass
+class SetExpr(Expression):
     elements: list[Expression]
 
 

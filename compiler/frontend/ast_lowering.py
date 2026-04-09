@@ -12,6 +12,7 @@ from compiler.core.ast import (
     ClassDef,
     CompareExpr,
     ConstantExpr,
+    DictExpr,
     ExceptHandler,
     ExprStmt,
     ForStmt,
@@ -27,6 +28,7 @@ from compiler.core.ast import (
     Program,
     RaiseStmt,
     ReturnStmt,
+    SetExpr,
     SourceSpan,
     TryStmt,
     TupleExpr,
@@ -98,10 +100,7 @@ class PythonSubsetLowerer:
             if self._is_docstring(node):
                 return None
             if self._is_print_call(node.value):
-                value = self._lower_expr(node.value.args[0])
-                if value is None:
-                    return None
-                return PrintStmt(span=self._span(node), value=value)
+                return self._lower_print_statement(node)
             expr = self._lower_expr(node.value)
             if expr is None:
                 return None
@@ -232,27 +231,25 @@ class PythonSubsetLowerer:
             return RaiseStmt(span=self._span(node), value=value)
 
         if isinstance(node, ast.Try):
-            if node.finalbody:
-                self._unsupported(node, "try/finally is not supported yet")
-                return None
             if node.orelse:
                 self._unsupported(node, "try/else is not supported yet")
                 return None
-            if not node.handlers:
-                self._unsupported(node, "try without except handlers is not supported")
+            if not node.handlers and not node.finalbody:
+                self._unsupported(node, "try without except or finally is not supported")
                 return None
             handlers = []
             for handler in node.handlers:
+                type_name = None
                 if handler.type is not None:
-                    self._unsupported(handler, "typed except handlers are not supported yet")
-                    return None
-                if handler.name is not None:
-                    self._unsupported(handler, "except ... as name is not supported yet")
-                    return None
+                    if not isinstance(handler.type, ast.Name):
+                        self._unsupported(handler, "only named exception handlers are supported")
+                        return None
+                    type_name = handler.type.id
                 lowered_body = self._lower_body(handler.body, allow_docstring=True) or []
-                handlers.append(ExceptHandler(span=self._span(handler), body=lowered_body))
+                handlers.append(ExceptHandler(span=self._span(handler), type_name=type_name, name=handler.name, body=lowered_body))
             body = self._lower_body(node.body, allow_docstring=True) or []
-            return TryStmt(span=self._span(node), body=body, handlers=handlers)
+            finalbody = self._lower_body(node.finalbody, allow_docstring=True) or []
+            return TryStmt(span=self._span(node), body=body, handlers=handlers, finalbody=finalbody)
 
         self._unsupported(node, f"{type(node).__name__} is not supported")
         return None
@@ -269,6 +266,33 @@ class PythonSubsetLowerer:
                 return ConstantExpr(span=self._span(node), value=node.value)
             self._unsupported(node, f"constant {node.value!r} is not supported")
             return None
+
+        if isinstance(node, ast.JoinedStr):
+            if not node.values:
+                return ConstantExpr(span=self._span(node), value="")
+            parts = []
+            for value in node.values:
+                if isinstance(value, ast.Constant):
+                    parts.append(ConstantExpr(span=self._span(value), value=str(value.value)))
+                    continue
+                if isinstance(value, ast.FormattedValue):
+                    inner = self._lower_expr(value.value)
+                    if inner is None:
+                        return None
+                    if value.conversion == ord("r"):
+                        inner = CallExpr(span=self._span(value), func_name="repr", args=[inner])
+                    elif value.conversion == ord("a"):
+                        inner = CallExpr(span=self._span(value), func_name="ascii", args=[inner])
+                    else:
+                        inner = CallExpr(span=self._span(value), func_name="str", args=[inner])
+                    parts.append(inner)
+                    continue
+                self._unsupported(node, f"unsupported f-string component {type(value).__name__}")
+                return None
+            expr = parts[0]
+            for part in parts[1:]:
+                expr = BinaryExpr(span=self._span(node), op="+", left=expr, right=part)
+            return expr
 
         if isinstance(node, ast.Name):
             return NameExpr(span=self._span(node), name=node.id)
@@ -325,14 +349,6 @@ class PythonSubsetLowerer:
             if node.keywords:
                 self._unsupported(node, "keyword arguments are not supported")
                 return None
-            if isinstance(node.func, ast.Name) and node.func.id == "print":
-                if len(node.args) != 1:
-                    self._unsupported(node, "print() expects exactly one argument")
-                    return None
-                arg = self._lower_expr(node.args[0])
-                if arg is None:
-                    return None
-                return CallExpr(span=self._span(node), func_name="print", args=[arg])
             args = [self._lower_expr(arg) for arg in node.args]
             if any(arg is None for arg in args):
                 return None
@@ -357,6 +373,27 @@ class PythonSubsetLowerer:
             if any(element is None for element in elements):
                 return None
             return TupleExpr(span=self._span(node), elements=elements)
+
+        if isinstance(node, ast.Dict):
+            keys = []
+            values = []
+            for key, value in zip(node.keys, node.values):
+                if key is None:
+                    self._unsupported(node, "dict unpacking (**) is not supported yet")
+                    return None
+                lowered_key = self._lower_expr(key)
+                lowered_value = self._lower_expr(value)
+                if lowered_key is None or lowered_value is None:
+                    return None
+                keys.append(lowered_key)
+                values.append(lowered_value)
+            return DictExpr(span=self._span(node), keys=keys, values=values)
+
+        if isinstance(node, ast.Set):
+            elements = [self._lower_expr(element) for element in node.elts]
+            if any(element is None for element in elements):
+                return None
+            return SetExpr(span=self._span(node), elements=elements)
 
         if isinstance(node, ast.Subscript):
             if isinstance(node.slice, ast.Slice):
@@ -383,9 +420,31 @@ class PythonSubsetLowerer:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "print"
-            and not node.keywords
-            and len(node.args) == 1
         )
+
+    def _lower_print_statement(self, node: ast.Expr) -> PrintStmt | None:
+        call = node.value
+        assert isinstance(call, ast.Call)
+        values = [self._lower_expr(arg) for arg in call.args]
+        if any(value is None for value in values):
+            return None
+
+        sep = None
+        end = None
+        for keyword in call.keywords:
+            if keyword.arg == "sep":
+                sep = self._lower_expr(keyword.value)
+                if sep is None:
+                    return None
+                continue
+            if keyword.arg == "end":
+                end = self._lower_expr(keyword.value)
+                if end is None:
+                    return None
+                continue
+            self._unsupported(call, f"print() keyword {keyword.arg!r} is not supported yet")
+            return None
+        return PrintStmt(span=self._span(node), values=values, sep=sep, end=end)
 
     @staticmethod
     def _is_docstring(node: ast.stmt) -> bool:
@@ -427,6 +486,10 @@ class PythonSubsetLowerer:
             ast.LtE: "<=",
             ast.Gt: ">",
             ast.GtE: ">=",
+            ast.In: "in",
+            ast.NotIn: "not in",
+            ast.Is: "is",
+            ast.IsNot: "is not",
         }
         return mapping.get(type(operator))
 

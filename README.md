@@ -1,9 +1,9 @@
-# Python Subset Compiler
+# Python VM-First Compiler
 
-This repository now has two execution lanes for the current language surface:
+This repository currently has two execution lanes:
 
-- a package-driven VM path for direct execution
-- a native path that lowers to C and links against a runtime library
+- a VM-first execution path that is the semantic source of truth for the supported language surface
+- a narrower native path that lowers to C and links against a runtime library
 
 The active pipeline is rooted in `compiler/`.
 
@@ -12,47 +12,56 @@ Python source -> lexer -> parser -> CST -> AST lowering -> semantic analysis -> 
                                                       \-> optimization -> IR -> C -> executable
 ```
 
-## Supported v1 subset
+The project is no longer best described as "compile-to-C only". The supported language grows on the VM path first; the native path is intentionally conservative until runtime semantics are broader and more stable.
+
+## Current VM-supported surface
 
 - Integer, float, bool, and string literals
 - Variable assignment and augmented assignment
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
-- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `is`, `is not`
 - Boolean expressions: `and`, `or`, `not`
 - `if` / `elif` / `else`
 - `while`
-- VM-only `for` loops over `range(...)`
+- `for` loops over `range(...)`
 - Top-level function definitions, calls, returns, recursion, and forward references
-- VM-only list and tuple literals
-- VM-only indexing for lists, tuples, and strings
-- VM-only `len(...)` for lists, tuples, and strings
-- VM-only top-level classes with instance fields, attributes, and methods
-- VM-only `range(...)`
-- VM-only local module imports via `import name` and `from name import symbol`
-- VM-only nested functions with closure capture
-- VM-only basic `raise` and bare `try/except`
-- `print(expr)`
-- Single-file native compilation
+- Nested functions with closure capture
+- List, tuple, dict, and set literals
+- Indexing for lists, tuples, strings, and dicts
+- `len(...)` for lists, tuples, strings, dicts, and sets
+- Top-level classes with instance fields, attributes, methods, and `__init__`
+- Local module imports via `import name` and `from name import symbol`
+- `raise`, `try/except`, `try/finally`, and named typed handlers like `except MyError as err`
+- Multi-argument `print(...)` with `sep=` and `end=`
+- f-strings lowered through the frontend
+- A growing builtin registry including `print`, `len`, `range`, `str`, `repr`, `ascii`, `sorted`, `abs`, and common Python builtins
 
-## Explicitly unsupported in v1
+## Current native path
+
+- Single-file compilation only
+- Primitive arithmetic / control-flow subset
+- CFG + SSA optimization passes
+- Separate emitted runtime artifacts: generated C plus `py_runtime.h` / `py_runtime.c`
+
+The native path still rejects:
+- imports and multi-file execution
+- closures and nested functions
+- exceptions
+- `for` loops
+- list/tuple/dict/set runtime features
+- classes, attributes, and methods
+- VM-only builtin behaviors like multi-argument `print(...)`
+
+## Explicitly unsupported today
 
 - decorators
-- default arguments, keyword arguments, and annotations
+- default arguments and keyword arguments
+- comprehensions
+- generators / `yield`
+- context managers / `with`
+- `global` / `nonlocal`
+- slicing
 - full Python runtime semantics
-
-Current boundary:
-- VM execution supports `for` loops over `range(...)` for the current subset
-- VM execution supports list/tuple literals, indexing, and `len(...)`
-- VM execution supports top-level classes, instance attributes, and methods
-- VM execution supports local module resolution for the current subset
-- VM execution supports nested functions and lexical closure capture for the current subset
-- VM execution supports basic untyped exception handling for the current subset
-- native compilation still rejects imports and remains single-file only
-- native compilation still rejects lists, tuples, indexing, and `len(...)`
-- native compilation still rejects classes, attributes, and methods
-- native compilation still rejects nested functions/closures
-- native compilation still rejects exceptions
-- native compilation still rejects `for` loops
 
 Unsupported features fail compilation with structured diagnostics.
 
@@ -89,12 +98,17 @@ python-subset-compiler test_input.py
 
 The `--no-viz` flag is kept for CLI compatibility but AST visualization is no longer part of the active architecture.
 
+Generated artifacts like `output.c`, `py_runtime.c`, and `py_runtime.h` are build outputs, not source-of-truth files.
+
 ## Project shape
 
 - `main.py`: compatibility entrypoint
 - `compiler/frontend`: source handling, lexer, parser, CST, and AST lowering
 - `compiler/semantic`: symbol collection, binding resolution, type checking, and control-flow checks
 - `compiler/vm`: bytecode lowering and VM execution
+- `compiler/vm/objects.py`: runtime-facing VM object/value helpers
+- `compiler/vm/builtins.py`: builtin registry for the VM path
+- `compiler/vm/errors.py`: VM runtime error and unwind signals
 - `compiler/optimizer`: safe AST-level folding
 - `compiler/ir`: CFG-based lowering with explicit basic blocks and branch terminators
 - `compiler/backend`: native C code generation
@@ -115,10 +129,11 @@ The suite covers:
 
 - successful compilation and execution for valid subset programs
 - VM execution for the current language surface
+- direct VM runtime helper coverage
 - VM execution for `for` loops over `range(...)`
-- VM execution for list/tuple literals, indexing, and `len(...)`
+- VM execution for list/tuple/dict/set literals, indexing, and `len(...)`
 - VM execution for top-level classes, attributes, and methods
-- VM execution for local imports, closures, and basic exceptions
+- VM execution for local imports, closures, typed/untyped exceptions, `try/finally`, and multi-argument print
 - short-circuit correctness
 - forward references and recursion
 - compile-time rejection of unsupported syntax and mixed invalid operations

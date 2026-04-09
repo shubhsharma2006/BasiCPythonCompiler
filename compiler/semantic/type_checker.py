@@ -10,6 +10,7 @@ from compiler.core.ast import (
     ClassDef,
     CompareExpr,
     ConstantExpr,
+    DictExpr,
     ExceptHandler,
     ExprStmt,
     ForStmt,
@@ -25,6 +26,7 @@ from compiler.core.ast import (
     Program,
     RaiseStmt,
     ReturnStmt,
+    SetExpr,
     TryStmt,
     TupleExpr,
     UnaryExpr,
@@ -36,6 +38,19 @@ from compiler.utils.error_handler import ErrorHandler
 
 
 class TypeChecker:
+    BUILTIN_NAMES = {
+        "len", "range", "str", "repr", "ascii", "int", "float", "bool", "list", "dict", "set", "tuple",
+        "enumerate", "zip", "map", "filter", "reversed", "sorted", "iter", "next", "abs", "round", "min",
+        "max", "sum", "pow", "divmod", "hash", "hex", "oct", "bin", "chr", "ord", "format", "print",
+        "input", "open", "any", "all", "isinstance", "issubclass", "hasattr", "getattr", "setattr",
+        "delattr", "callable", "id", "type", "object", "super", "property", "staticmethod", "classmethod",
+        "vars", "dir", "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "AttributeError",
+        "RuntimeError", "StopIteration", "NameError", "ImportError", "OSError", "IOError",
+        "FileNotFoundError", "ZeroDivisionError", "OverflowError", "MemoryError", "RecursionError",
+        "NotImplementedError", "AssertionError", "SystemExit", "KeyboardInterrupt", "GeneratorExit",
+        "ArithmeticError", "LookupError",
+    }
+
     def __init__(self, errors: ErrorHandler):
         self.errors = errors
         self.table: SymbolTable | None = None
@@ -63,7 +78,7 @@ class TypeChecker:
 
     @staticmethod
     def _is_builtin_function(name: str) -> bool:
-        return name in {"len", "range"}
+        return name in TypeChecker.BUILTIN_NAMES
 
     def _check_function(self, function: FunctionType) -> None:
         if function.state == "done":
@@ -125,9 +140,18 @@ class TypeChecker:
             return
 
         if isinstance(statement, PrintStmt):
-            value_type = self._check_expr(statement.value, scope)
-            if value_type == ValueType.VOID:
-                self._error(statement, "cannot print a void expression")
+            for value in statement.values:
+                value_type = self._check_expr(value, scope)
+                if value_type == ValueType.VOID:
+                    self._error(statement, "cannot print a void expression")
+            if statement.sep is not None:
+                sep_type = self._check_expr(statement.sep, scope)
+                if sep_type not in {ValueType.STRING, ValueType.UNKNOWN}:
+                    self._error(statement.sep, f"print() sep must be str, got {sep_type.value}")
+            if statement.end is not None:
+                end_type = self._check_expr(statement.end, scope)
+                if end_type not in {ValueType.STRING, ValueType.UNKNOWN}:
+                    self._error(statement.end, f"print() end must be str, got {end_type.value}")
             return
 
         if isinstance(statement, ExprStmt):
@@ -168,6 +192,8 @@ class TypeChecker:
                 self._check_statement(child, scope)
             for handler in statement.handlers:
                 self._check_handler(handler, scope)
+            for child in statement.finalbody:
+                self._check_statement(child, scope)
             return
 
         if isinstance(statement, FunctionDef):
@@ -245,6 +271,9 @@ class TypeChecker:
         if isinstance(expr, BinaryExpr):
             left_type = self._check_expr(expr.left, scope)
             right_type = self._check_expr(expr.right, scope)
+            if expr.op == "+" and left_type in {ValueType.STRING, ValueType.UNKNOWN} and right_type in {ValueType.STRING, ValueType.UNKNOWN}:
+                if left_type == ValueType.STRING or right_type == ValueType.STRING:
+                    return self._set_expr_type(expr, ValueType.STRING)
             if left_type != ValueType.UNKNOWN and not is_numeric(left_type):
                 self._error(expr.left, f"{expr.op} requires numeric operands, got {left_type.value}")
             if right_type != ValueType.UNKNOWN and not is_numeric(right_type):
@@ -257,6 +286,8 @@ class TypeChecker:
         if isinstance(expr, CompareExpr):
             left_type = self._check_expr(expr.left, scope)
             right_type = self._check_expr(expr.right, scope)
+            if expr.op in {"in", "not in", "is", "is not"}:
+                return self._set_expr_type(expr, ValueType.BOOL)
             if expr.op in ("<", "<=", ">", ">="):
                 if left_type != ValueType.UNKNOWN and not is_numeric(left_type):
                     self._error(expr.left, f"{expr.op} requires numeric operands, got {left_type.value}")
@@ -320,12 +351,33 @@ class TypeChecker:
                     self._error(element, "tuple elements cannot be void")
             return self._set_expr_type(expr, ValueType.TUPLE)
 
+        if isinstance(expr, DictExpr):
+            for key in expr.keys:
+                key_type = self._check_expr(key, scope)
+                if key_type == ValueType.VOID:
+                    self._error(key, "dict keys cannot be void")
+            for value in expr.values:
+                value_type = self._check_expr(value, scope)
+                if value_type == ValueType.VOID:
+                    self._error(value, "dict values cannot be void")
+            return self._set_expr_type(expr, ValueType.DICT)
+
+        if isinstance(expr, SetExpr):
+            for element in expr.elements:
+                element_type = self._check_expr(element, scope)
+                if element_type == ValueType.VOID:
+                    self._error(element, "set elements cannot be void")
+            return self._set_expr_type(expr, ValueType.SET)
+
         if isinstance(expr, IndexExpr):
             collection_type = self._check_expr(expr.collection, scope)
             index_type = self._check_expr(expr.index, scope)
-            if index_type not in {ValueType.INT, ValueType.UNKNOWN}:
+            if collection_type == ValueType.DICT:
+                if index_type == ValueType.VOID:
+                    self._error(expr.index, "dict index cannot be void")
+            elif index_type not in {ValueType.INT, ValueType.UNKNOWN}:
                 self._error(expr.index, f"index must be int, got {index_type.value}")
-            if collection_type not in {ValueType.LIST, ValueType.TUPLE, ValueType.STRING, ValueType.UNKNOWN}:
+            if collection_type not in {ValueType.LIST, ValueType.TUPLE, ValueType.STRING, ValueType.DICT, ValueType.UNKNOWN}:
                 self._error(expr.collection, f"cannot index value of type {collection_type.value}")
             result_type = ValueType.STRING if collection_type == ValueType.STRING else ValueType.UNKNOWN
             return self._set_expr_type(expr, result_type)
@@ -378,18 +430,23 @@ class TypeChecker:
         return None
 
     def _check_handler(self, handler: ExceptHandler, scope: Scope) -> None:
+        handler_scope = Scope(scope)
+        if handler.name is not None:
+            handler_scope.define(handler.name, ValueType.UNKNOWN)
         for child in handler.body:
-            self._check_statement(child, scope)
+            self._check_statement(child, handler_scope)
 
     def _check_builtin_call(self, expr: CallExpr, scope: Scope) -> ValueType:
         arg_types = [self._check_expr(arg, scope) for arg in expr.args]
+        if expr.func_name == "print":
+            return self._set_expr_type(expr, ValueType.VOID)
         if expr.func_name == "len":
             if len(arg_types) != 1:
                 self._error(expr, "len() expects exactly 1 argument")
                 return self._set_expr_type(expr, ValueType.INT)
             container_type = arg_types[0]
-            if container_type not in {ValueType.LIST, ValueType.TUPLE, ValueType.STRING, ValueType.UNKNOWN}:
-                self._error(expr.args[0], f"len() expects a list, tuple, or string, got {container_type.value}")
+            if container_type not in {ValueType.LIST, ValueType.TUPLE, ValueType.STRING, ValueType.DICT, ValueType.SET, ValueType.UNKNOWN}:
+                self._error(expr.args[0], f"len() expects a list, tuple, string, dict, or set, got {container_type.value}")
             return self._set_expr_type(expr, ValueType.INT)
         if expr.func_name == "range":
             if len(arg_types) not in {1, 2, 3}:
@@ -399,6 +456,16 @@ class TypeChecker:
                 if arg_type not in {ValueType.INT, ValueType.UNKNOWN}:
                     self._error(expr.args[index - 1], f"range() argument {index} must be int, got {arg_type.value}")
             return self._set_expr_type(expr, ValueType.UNKNOWN)
+        if expr.func_name in {"str", "repr", "ascii"}:
+            return self._set_expr_type(expr, ValueType.STRING)
+        if expr.func_name == "dict":
+            return self._set_expr_type(expr, ValueType.DICT)
+        if expr.func_name == "set":
+            return self._set_expr_type(expr, ValueType.SET)
+        if expr.func_name == "list":
+            return self._set_expr_type(expr, ValueType.LIST)
+        if expr.func_name == "tuple":
+            return self._set_expr_type(expr, ValueType.TUPLE)
         return self._set_expr_type(expr, ValueType.UNKNOWN)
 
     @staticmethod

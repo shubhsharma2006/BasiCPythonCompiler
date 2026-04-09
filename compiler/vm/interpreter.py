@@ -4,59 +4,32 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from compiler.vm.bytecode import BytecodeFunction, BytecodeModule
-
-
-class VMError(RuntimeError):
-    pass
-
-
-class ReturnSignal(Exception):
-    def __init__(self, value):
-        super().__init__()
-        self.value = value
-
-
-class RaisedSignal(Exception):
-    def __init__(self, value):
-        super().__init__()
-        self.value = value
-
-
-@dataclass
-class ModuleObject:
-    name: str
-    filename: str
-    namespace: dict[str, object]
-
-
-@dataclass
-class Closure:
-    function: BytecodeFunction
-    closure_scopes: list[dict[str, object]]
-
-
-@dataclass
-class ClassObject:
-    name: str
-    methods: dict[str, BytecodeFunction]
-
-
-@dataclass
-class InstanceObject:
-    class_object: ClassObject
-    fields: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass
-class BoundMethod:
-    instance: InstanceObject | ModuleObject
-    function: object
+from compiler.vm.builtins import build_builtins
+from compiler.vm.errors import RaisedSignal, ReturnSignal, VMError
+from compiler.vm.objects import (
+    ClassObject,
+    Closure,
+    InstanceObject,
+    ModuleObject,
+    BoundMethod,
+    py_binary_op,
+    py_compare_op,
+    py_index_get,
+    py_invoke_callable,
+    py_load_attr,
+    py_matches_exception,
+    py_store_attr,
+    py_truthy,
+    py_unary_op,
+)
 
 
 @dataclass
 class TryHandler:
-    target: int
+    kind: str
     stack_depth: int
+    handlers: list[tuple[int, str | None, str | None]] = field(default_factory=list)
+    target: int | None = None
 
 
 @dataclass
@@ -68,6 +41,7 @@ class Frame:
     closure_scopes: list[dict[str, object]] = field(default_factory=list)
     stack: list[object] = field(default_factory=list)
     try_stack: list[TryHandler] = field(default_factory=list)
+    pending_unwind: tuple[str, object] | None = None
     ip: int = 0
 
     @property
@@ -82,17 +56,15 @@ class BytecodeInterpreter:
         self.modules: dict[str, ModuleObject] = {}
         self.bytecode_modules: dict[str, BytecodeModule] = {}
         self.loading: set[str] = set()
-        self.builtins: dict[str, object] = {
-            "len": self._builtin_len,
-            "range": self._builtin_range,
-        }
+        self._current_frame: Frame | None = None
+        self.builtins: dict[str, object] = build_builtins(self)
 
     def run(self, module: BytecodeModule) -> str:
         try:
             self._execute_module(module)
         except RaisedSignal as signal:
-            raise VMError(f"unhandled exception: {self._format_value(signal.value)}") from None
-        return "\n".join(self.output) + ("\n" if self.output else "")
+            raise VMError(f"unhandled exception: {self.format_value(signal.value)}") from None
+        return "".join(self.output)
 
     def _execute_module(self, module: BytecodeModule) -> ModuleObject:
         existing = self.modules.get(module.filename)
@@ -122,10 +94,14 @@ class BytecodeInterpreter:
         frame.locals.update(zip(function.params, args))
         try:
             while frame.ip < len(function.instructions):
+                self._current_frame = frame
                 instruction = function.instructions[frame.ip]
                 frame.ip += 1
                 try:
                     self._execute_instruction(frame, instruction)
+                except ReturnSignal as signal:
+                    if not self._handle_return(frame, signal):
+                        raise
                 except RaisedSignal as signal:
                     if not self._handle_exception(frame, signal):
                         raise
@@ -178,6 +154,22 @@ class BytecodeInterpreter:
             values.reverse()
             frame.stack.append(tuple(values))
             return
+        if op == "BUILD_MAP":
+            count = int(arg)
+            pairs = []
+            for _ in range(count):
+                value = frame.stack.pop()
+                key = frame.stack.pop()
+                pairs.append((key, value))
+            pairs.reverse()
+            frame.stack.append(dict(pairs))
+            return
+        if op == "BUILD_SET":
+            count = int(arg)
+            values = [frame.stack.pop() for _ in range(count)]
+            values.reverse()
+            frame.stack.append(set(values))
+            return
         if op == "BUILD_CLASS":
             class_name, method_specs = arg
             methods: dict[str, BytecodeFunction] = {}
@@ -185,13 +177,30 @@ class BytecodeInterpreter:
                 methods[method_name] = self._lookup_function(frame.module, function_key)
             frame.stack.append(ClassObject(name=class_name, methods=methods))
             return
+        if op == "TRY_FINALLY":
+            frame.try_stack.append(TryHandler(kind="finally", target=int(arg), stack_depth=len(frame.stack)))
+            return
         if op == "TRY_EXCEPT":
-            frame.try_stack.append(TryHandler(target=int(arg), stack_depth=len(frame.stack)))
+            frame.try_stack.append(TryHandler(kind="except", handlers=list(arg), stack_depth=len(frame.stack)))
             return
         if op == "END_TRY":
             if frame.try_stack:
                 frame.try_stack.pop()
             return
+        if op == "POP_FINALLY":
+            if frame.try_stack and frame.try_stack[-1].kind == "finally":
+                frame.try_stack.pop()
+            return
+        if op == "END_FINALLY":
+            if frame.pending_unwind is None:
+                return
+            kind, value = frame.pending_unwind
+            frame.pending_unwind = None
+            if kind == "return":
+                raise ReturnSignal(value)
+            if kind == "raise":
+                raise RaisedSignal(value)
+            raise VMError(f"unknown unwind kind {kind!r}")
         if op == "GET_ITER":
             frame.stack.append(iter(frame.stack.pop()))
             return
@@ -206,36 +215,33 @@ class BytecodeInterpreter:
         if op == "BINARY_SUBSCR":
             index = frame.stack.pop()
             collection = frame.stack.pop()
-            try:
-                frame.stack.append(collection[index])
-            except (IndexError, KeyError, TypeError) as exc:
-                raise VMError(str(exc)) from None
+            frame.stack.append(py_index_get(collection, index))
             return
         if op == "LOAD_ATTR":
             obj = frame.stack.pop()
-            frame.stack.append(self._load_attr(obj, arg))
+            frame.stack.append(py_load_attr(obj, arg))
             return
         if op == "STORE_ATTR":
             value = frame.stack.pop()
             obj = frame.stack.pop()
-            self._store_attr(obj, arg, value)
+            py_store_attr(obj, arg, value)
             return
         if op == "BINARY_OP":
             right = frame.stack.pop()
             left = frame.stack.pop()
-            frame.stack.append(self._binary_op(arg, left, right))
+            frame.stack.append(py_binary_op(arg, left, right))
             return
         if op == "COMPARE_OP":
             right = frame.stack.pop()
             left = frame.stack.pop()
-            frame.stack.append(self._compare_op(arg, left, right))
+            frame.stack.append(py_compare_op(arg, left, right))
             return
         if op == "UNARY_OP":
             operand = frame.stack.pop()
-            frame.stack.append(self._unary_op(arg, operand))
+            frame.stack.append(py_unary_op(arg, operand))
             return
         if op == "TO_BOOL":
-            frame.stack.append(bool(frame.stack.pop()))
+            frame.stack.append(py_truthy(frame.stack.pop()))
             return
         if op == "JUMP":
             frame.ip = int(arg)
@@ -271,8 +277,10 @@ class BytecodeInterpreter:
             args = [frame.stack.pop() for _ in range(argc)]
             args.reverse()
             obj = frame.stack.pop()
-            callable_obj = self._load_attr(obj, method_name)
-            frame.stack.append(self._invoke_callable(callable_obj, args, frame.module))
+            callable_obj = py_load_attr(obj, method_name)
+            frame.stack.append(
+                py_invoke_callable(callable_obj, args, frame.module, execute_function=self._execute_function)
+            )
             return
         if op == "MAKE_FUNCTION":
             function = self._lookup_function(frame.module, arg)
@@ -290,8 +298,12 @@ class BytecodeInterpreter:
             frame.stack.append(module_object.namespace[export_name])
             return
         if op == "PRINT":
-            value = frame.stack.pop()
-            self.output.append(self._format_value(value))
+            argc, has_sep, has_end = arg
+            end = frame.stack.pop() if has_end else "\n"
+            sep = frame.stack.pop() if has_sep else " "
+            values = [frame.stack.pop() for _ in range(argc)]
+            values.reverse()
+            self.builtins["print"](*values, sep=sep, end=end)
             return
         if op == "RAISE":
             raise RaisedSignal(frame.stack.pop() if frame.stack else None)
@@ -317,132 +329,49 @@ class BytecodeInterpreter:
         return loaded.functions[function_key]
 
     def _handle_exception(self, frame: Frame, signal: RaisedSignal) -> bool:
-        if not frame.try_stack:
-            return False
-        handler = frame.try_stack.pop()
-        del frame.stack[handler.stack_depth:]
-        frame.stack.append(signal.value)
-        frame.ip = handler.target
-        return True
+        while frame.try_stack:
+            handler = frame.try_stack.pop()
+            if handler.kind == "except":
+                for target, type_name, bind_name in handler.handlers:
+                    if not py_matches_exception(signal.value, type_name):
+                        continue
+                    del frame.stack[handler.stack_depth:]
+                    if bind_name is not None:
+                        if frame.is_module:
+                            frame.globals[bind_name] = signal.value
+                        else:
+                            frame.locals[bind_name] = signal.value
+                    frame.ip = target
+                    return True
+                continue
+            if handler.kind == "finally":
+                del frame.stack[handler.stack_depth:]
+                frame.pending_unwind = ("raise", signal.value)
+                frame.ip = int(handler.target)
+                return True
+        return False
+
+    def _handle_return(self, frame: Frame, signal: ReturnSignal) -> bool:
+        while frame.try_stack:
+            handler = frame.try_stack.pop()
+            if handler.kind != "finally":
+                continue
+            del frame.stack[handler.stack_depth:]
+            frame.pending_unwind = ("return", signal.value)
+            frame.ip = int(handler.target)
+            return True
+        return False
 
     def _invoke_callable(self, callable_obj, args: list[object], module: ModuleObject):
-        if isinstance(callable_obj, BytecodeFunction):
-            return self._execute_function(callable_obj, args, module)
-        if isinstance(callable_obj, Closure):
-            return self._execute_function(callable_obj.function, args, module, callable_obj.closure_scopes)
-        if isinstance(callable_obj, BoundMethod):
-            if isinstance(callable_obj.function, BytecodeFunction):
-                return self._execute_function(callable_obj.function, [callable_obj.instance, *args], module)
-            if callable(callable_obj.function):
-                return callable_obj.function(callable_obj.instance, *args)
-            raise VMError("invalid bound method")
-        if isinstance(callable_obj, ClassObject):
-            instance = InstanceObject(class_object=callable_obj)
-            initializer = callable_obj.methods.get("__init__")
-            if initializer is not None:
-                self._execute_function(initializer, [instance, *args], module)
-            elif args:
-                raise VMError(f"class {callable_obj.name!r} takes no arguments")
-            return instance
-        if callable(callable_obj):
-            try:
-                return callable_obj(*args)
-            except TypeError as exc:
-                raise VMError(str(exc)) from None
-        raise VMError(f"cannot call {callable_obj!r}")
+        return py_invoke_callable(callable_obj, args, module, execute_function=self._execute_function)
 
-    def _load_attr(self, obj, attr_name: str):
-        if isinstance(obj, ModuleObject):
-            if attr_name not in obj.namespace:
-                raise VMError(f"module {obj.name!r} has no attribute {attr_name!r}")
-            return obj.namespace[attr_name]
-        if isinstance(obj, InstanceObject):
-            if attr_name in obj.fields:
-                return obj.fields[attr_name]
-            method = obj.class_object.methods.get(attr_name)
-            if method is not None:
-                return BoundMethod(instance=obj, function=method)
-            raise VMError(f"instance of {obj.class_object.name!r} has no attribute {attr_name!r}")
-        if isinstance(obj, ClassObject):
-            method = obj.methods.get(attr_name)
-            if method is not None:
-                return method
-            raise VMError(f"class {obj.name!r} has no attribute {attr_name!r}")
-        raise VMError(f"cannot access attribute {attr_name!r} on {type(obj).__name__}")
+    def format_value(self, value) -> str:
+        return repr(value) if isinstance(value, float) else str(value)
 
-    def _store_attr(self, obj, attr_name: str, value) -> None:
-        if isinstance(obj, InstanceObject):
-            obj.fields[attr_name] = value
-            return
-        if isinstance(obj, ModuleObject):
-            obj.namespace[attr_name] = value
-            return
-        raise VMError(f"cannot set attribute {attr_name!r} on {type(obj).__name__}")
+    def current_globals(self):
+        return dict(self._current_frame.globals) if self._current_frame is not None else {}
 
-    @staticmethod
-    def _builtin_range(*args):
-        if len(args) not in {1, 2, 3}:
-            raise VMError("range() expects 1 to 3 arguments")
-        normalized: list[int] = []
-        for index, value in enumerate(args, start=1):
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise VMError(f"range() argument {index} must be int")
-            normalized.append(value)
-        return range(*normalized)
-
-    @staticmethod
-    def _builtin_len(*args):
-        if len(args) != 1:
-            raise VMError("len() expects exactly 1 argument")
-        value = args[0]
-        if not isinstance(value, (list, tuple, str)):
-            raise VMError(f"len() expects a list, tuple, or string, got {type(value).__name__}")
-        return len(value)
-
-    @staticmethod
-    def _binary_op(op: str, left, right):
-        if op == "+":
-            return left + right
-        if op == "-":
-            return left - right
-        if op == "*":
-            return left * right
-        if op == "/":
-            return left / right
-        if op == "%":
-            return left % right
-        raise VMError(f"unsupported binary operator {op!r}")
-
-    @staticmethod
-    def _compare_op(op: str, left, right):
-        if op == "==":
-            return left == right
-        if op == "!=":
-            return left != right
-        if op == "<":
-            return left < right
-        if op == "<=":
-            return left <= right
-        if op == ">":
-            return left > right
-        if op == ">=":
-            return left >= right
-        raise VMError(f"unsupported comparison operator {op!r}")
-
-    @staticmethod
-    def _unary_op(op: str, operand):
-        if op == "-":
-            return -operand
-        if op == "not":
-            return not bool(operand)
-        raise VMError(f"unsupported unary operator {op!r}")
-
-    @staticmethod
-    def _format_value(value) -> str:
-        if isinstance(value, bool):
-            return "1" if value else "0"
-        if isinstance(value, float):
-            return f"{value:g}"
-        if value is None:
-            return "None"
-        return str(value)
+    def current_locals(self):
+        if self._current_frame is None:
+            return {}
+        return dict(self._current_frame.locals)

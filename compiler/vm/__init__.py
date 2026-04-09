@@ -1,12 +1,57 @@
 from compiler.vm.bytecode import BytecodeFunction, BytecodeModule, Instruction
-from compiler.vm.interpreter import BytecodeInterpreter, VMError
+from compiler.vm.builtins import build_builtins
+from compiler.vm.errors import RaisedSignal, ReturnSignal, VMError
 from compiler.vm.lowering import BytecodeLowerer
+from compiler.vm.objects import (
+    BoundMethod,
+    ClassObject,
+    Closure,
+    InstanceObject,
+    ModuleObject,
+    PyBoolObject,
+    PyDictObject,
+    PyExceptionObject,
+    PyFloatObject,
+    PyFunctionObject,
+    PyIntObject,
+    PyInstanceObject,
+    PyListObject,
+    PyObject,
+    PyClassObject,
+    PySetObject,
+    PyStrObject,
+    PyTupleObject,
+    unwrap_runtime_value,
+)
+from compiler.vm.interpreter import BytecodeInterpreter
 
 __all__ = [
+    "BoundMethod",
     "BytecodeFunction",
     "BytecodeInterpreter",
     "BytecodeLowerer",
     "BytecodeModule",
+    "ClassObject",
+    "Closure",
+    "InstanceObject",
     "Instruction",
+    "ModuleObject",
+    "PyBoolObject",
+    "PyDictObject",
+    "PyExceptionObject",
+    "PyFloatObject",
+    "PyFunctionObject",
+    "PyIntObject",
+    "PyInstanceObject",
+    "PyListObject",
+    "PyObject",
+    "PyClassObject",
+    "PySetObject",
+    "PyStrObject",
+    "PyTupleObject",
+    "RaisedSignal",
+    "ReturnSignal",
     "VMError",
+    "build_builtins",
+    "unwrap_runtime_value",
 ]

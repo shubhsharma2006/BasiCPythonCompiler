@@ -111,7 +111,7 @@ SOURCE_TESTS = [
     {
         "name": "Mutual recursion",
         "source": """def is_even(n):\n    if n == 0:\n        return True\n    return is_odd(n - 1)\n\n\ndef is_odd(n):\n    if n == 0:\n        return False\n    return is_even(n - 1)\n\n\nprint(is_even(6))\nprint(is_odd(7))\n""",
-        "expected": ["1", "1"],
+        "expected": ["True", "True"],
     },
     {
         "name": "Local module import",
@@ -135,6 +135,11 @@ SOURCE_TESTS = [
         "expected": ["3", "20", "4", "e"],
     },
     {
+        "name": "Dicts sets and container methods",
+        "source": """d = {"a": 1, "b": 2}\nprint(d["a"])\nprint(len(d))\nprint(d.get("b"))\ns = {1, 2}\ns.add(3)\nprint(3 in s)\n""",
+        "expected": ["1", "2", "2", "True"],
+    },
+    {
         "name": "Classes attributes and methods",
         "source": """class Counter:\n    def __init__(self, start):\n        self.value = start\n    def inc(self):\n        self.value = self.value + 1\n        return self.value\n\ncounter = Counter(5)\nprint(counter.value)\nprint(counter.inc())\nprint(counter.value)\n""",
         "expected": ["5", "6", "6"],
@@ -143,6 +148,41 @@ SOURCE_TESTS = [
         "name": "Basic try/except",
         "source": """try:\n    raise "boom"\nexcept:\n    print("handled")\n""",
         "expected": ["handled"],
+    },
+    {
+        "name": "Typed except with binding",
+        "source": """class MyError:\n    def __init__(self, message):\n        self.message = message\n\ntry:\n    raise MyError("boom")\nexcept MyError as err:\n    print(err.message)\n""",
+        "expected": ["boom"],
+    },
+    {
+        "name": "Multi argument print",
+        "source": """print("hello", "world", sep=", ", end="!")\n""",
+        "expected": ["hello, world!"],
+    },
+    {
+        "name": "F strings",
+        "source": """name = "Ada"\nprint(f"Hello {name}")\n""",
+        "expected": ["Hello Ada"],
+    },
+    {
+        "name": "Membership and identity operators",
+        "source": """items = [1, 2, 3]\nprint(2 in items)\nprint(4 not in items)\nprint(items is items)\n""",
+        "expected": ["True", "True", "True"],
+    },
+    {
+        "name": "Additional builtins",
+        "source": """items = [3, 1, 2]\nprint(sorted(items)[0])\nprint(str(10))\nprint(abs(-4))\n""",
+        "expected": ["1", "10", "4"],
+    },
+    {
+        "name": "Try/finally on return",
+        "source": """def compute():\n    try:\n        return 7\n    finally:\n        print("cleanup")\n\nprint(compute())\n""",
+        "expected": ["cleanup", "7"],
+    },
+    {
+        "name": "Try/finally exception propagation",
+        "source": """try:\n    try:\n        raise "boom"\n    finally:\n        print("cleanup")\nexcept:\n    print("handled")\n""",
+        "expected": ["cleanup", "handled"],
     },
 ]
 
@@ -161,7 +201,7 @@ NEGATIVE_TESTS = [
     {
         "name": "Reject bad len argument",
         "source": "print(len(1))\n",
-        "expected_substring": "len() expects a list, tuple, or string",
+        "expected_substring": "len() expects a list, tuple, string, dict, or set",
     },
     {
         "name": "Reject bad range arity",
@@ -182,6 +222,11 @@ NEGATIVE_TESTS = [
         "name": "Reject unhandled exceptions",
         "source": 'raise "boom"\n',
         "expected_substring": "unhandled exception: boom",
+    },
+    {
+        "name": "Reject unsupported print keyword",
+        "source": 'print("x", flush=True)\n',
+        "expected_substring": "print() keyword 'flush' is not supported yet",
     },
 ]
 

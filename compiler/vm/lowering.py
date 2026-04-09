@@ -10,6 +10,7 @@ from compiler.core.ast import (
     ClassDef,
     CompareExpr,
     ConstantExpr,
+    DictExpr,
     ExprStmt,
     ForStmt,
     FromImportStmt,
@@ -24,6 +25,7 @@ from compiler.core.ast import (
     Program,
     RaiseStmt,
     ReturnStmt,
+    SetExpr,
     TryStmt,
     TupleExpr,
     UnaryExpr,
@@ -100,8 +102,13 @@ class BytecodeLowerer:
             return
 
         if isinstance(statement, PrintStmt):
-            self._emit_expr(statement.value, instructions)
-            instructions.append(Instruction("PRINT"))
+            for value in statement.values:
+                self._emit_expr(value, instructions)
+            if statement.sep is not None:
+                self._emit_expr(statement.sep, instructions)
+            if statement.end is not None:
+                self._emit_expr(statement.end, instructions)
+            instructions.append(Instruction("PRINT", (len(statement.values), statement.sep is not None, statement.end is not None)))
             return
 
         if isinstance(statement, RaiseStmt):
@@ -110,19 +117,39 @@ class BytecodeLowerer:
             return
 
         if isinstance(statement, TryStmt):
-            handler_labels = [self._new_label("except") for _ in statement.handlers]
-            end_label = self._new_label("try_end")
-            instructions.append(Instruction("TRY_EXCEPT", handler_labels[0]))
-            for child in statement.body:
-                self._emit_statement(child, instructions, parent_key)
-            instructions.append(Instruction("END_TRY"))
-            instructions.append(Instruction("JUMP", end_label))
-            for label, handler in zip(handler_labels, statement.handlers):
-                instructions.append(Instruction("LABEL", label))
-                for child in handler.body:
+            finally_label = self._new_label("finally") if statement.finalbody else None
+            if finally_label is not None:
+                instructions.append(Instruction("TRY_FINALLY", finally_label))
+
+            if statement.handlers:
+                handler_labels = [self._new_label("except") for _ in statement.handlers]
+                end_label = self._new_label("try_end")
+                handler_specs = [
+                    (label, handler.type_name, handler.name)
+                    for label, handler in zip(handler_labels, statement.handlers)
+                ]
+                instructions.append(Instruction("TRY_EXCEPT", handler_specs))
+                for child in statement.body:
                     self._emit_statement(child, instructions, parent_key)
+                instructions.append(Instruction("END_TRY"))
                 instructions.append(Instruction("JUMP", end_label))
-            instructions.append(Instruction("LABEL", end_label))
+                for label, handler in zip(handler_labels, statement.handlers):
+                    instructions.append(Instruction("LABEL", label))
+                    for child in handler.body:
+                        self._emit_statement(child, instructions, parent_key)
+                    instructions.append(Instruction("JUMP", end_label))
+                instructions.append(Instruction("LABEL", end_label))
+            else:
+                for child in statement.body:
+                    self._emit_statement(child, instructions, parent_key)
+
+            if finally_label is not None:
+                instructions.append(Instruction("POP_FINALLY"))
+                instructions.append(Instruction("JUMP", finally_label))
+                instructions.append(Instruction("LABEL", finally_label))
+                for child in statement.finalbody:
+                    self._emit_statement(child, instructions, parent_key)
+                instructions.append(Instruction("END_FINALLY"))
             return
 
         if isinstance(statement, ImportStmt):
@@ -252,6 +279,19 @@ class BytecodeLowerer:
             instructions.append(Instruction("BUILD_TUPLE", len(expr.elements)))
             return
 
+        if isinstance(expr, DictExpr):
+            for key, value in zip(expr.keys, expr.values):
+                self._emit_expr(key, instructions)
+                self._emit_expr(value, instructions)
+            instructions.append(Instruction("BUILD_MAP", len(expr.keys)))
+            return
+
+        if isinstance(expr, SetExpr):
+            for element in expr.elements:
+                self._emit_expr(element, instructions)
+            instructions.append(Instruction("BUILD_SET", len(expr.elements)))
+            return
+
         if isinstance(expr, IndexExpr):
             self._emit_expr(expr.collection, instructions)
             self._emit_expr(expr.index, instructions)
@@ -291,6 +331,13 @@ class BytecodeLowerer:
             lowered.append(instruction)
 
         for instruction in lowered:
-            if instruction.opcode in {"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "TRY_EXCEPT", "FOR_ITER"}:
+            if instruction.opcode in {"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "FOR_ITER"}:
                 instruction.arg = label_positions[instruction.arg]
+            elif instruction.opcode == "TRY_FINALLY":
+                instruction.arg = label_positions[instruction.arg]
+            elif instruction.opcode == "TRY_EXCEPT":
+                instruction.arg = [
+                    (label_positions[label], type_name, bind_name)
+                    for label, type_name, bind_name in instruction.arg
+                ]
         return lowered

@@ -13,11 +13,13 @@ from compiler.core.ast import (
     FunctionDef,
     IfStmt,
     IndexExpr,
+    DictExpr,
     ListExpr,
     MethodCallExpr,
     PrintStmt,
     Program,
     ReturnStmt,
+    SetExpr,
     TupleExpr,
     UnaryExpr,
     WhileStmt,
@@ -44,7 +46,11 @@ class ConstantFolder:
             statement.object = self._optimize_expr(statement.object)
             statement.value = self._optimize_expr(statement.value)
         elif isinstance(statement, PrintStmt):
-            statement.value = self._optimize_expr(statement.value)
+            statement.values = [self._optimize_expr(value) for value in statement.values]
+            if statement.sep is not None:
+                statement.sep = self._optimize_expr(statement.sep)
+            if statement.end is not None:
+                statement.end = self._optimize_expr(statement.end)
         elif isinstance(statement, ExprStmt):
             statement.expr = self._optimize_expr(statement.expr)
         elif isinstance(statement, IfStmt):
@@ -68,6 +74,8 @@ class ConstantFolder:
             expr.left = self._optimize_expr(expr.left)
             expr.right = self._optimize_expr(expr.right)
             if isinstance(expr.left, ConstantExpr) and isinstance(expr.right, ConstantExpr):
+                if expr.op == "+" and isinstance(expr.left.value, str) and isinstance(expr.right.value, str):
+                    return ConstantExpr(span=expr.span, value=expr.left.value + expr.right.value)
                 if isinstance(expr.left.value, (int, float)) and isinstance(expr.right.value, (int, float)):
                     if expr.op == "+":
                         return ConstantExpr(span=expr.span, value=expr.left.value + expr.right.value)
@@ -94,14 +102,21 @@ class ConstantFolder:
             expr.left = self._optimize_expr(expr.left)
             expr.right = self._optimize_expr(expr.right)
             if isinstance(expr.left, ConstantExpr) and isinstance(expr.right, ConstantExpr):
-                mapping = {
-                    "==": expr.left.value == expr.right.value,
-                    "!=": expr.left.value != expr.right.value,
-                    "<": expr.left.value < expr.right.value,
-                    "<=": expr.left.value <= expr.right.value,
-                    ">": expr.left.value > expr.right.value,
-                    ">=": expr.left.value >= expr.right.value,
-                }
+                try:
+                    mapping = {
+                        "==": expr.left.value == expr.right.value,
+                        "!=": expr.left.value != expr.right.value,
+                        "<": expr.left.value < expr.right.value,
+                        "<=": expr.left.value <= expr.right.value,
+                        ">": expr.left.value > expr.right.value,
+                        ">=": expr.left.value >= expr.right.value,
+                        "in": expr.left.value in expr.right.value,
+                        "not in": expr.left.value not in expr.right.value,
+                        "is": expr.left.value is expr.right.value,
+                        "is not": expr.left.value is not expr.right.value,
+                    }
+                except Exception:
+                    return expr
                 return ConstantExpr(span=expr.span, value=mapping[expr.op])
             return expr
 
@@ -120,6 +135,15 @@ class ConstantFolder:
             return expr
 
         if isinstance(expr, TupleExpr):
+            expr.elements = [self._optimize_expr(element) for element in expr.elements]
+            return expr
+
+        if isinstance(expr, DictExpr):
+            expr.keys = [self._optimize_expr(key) for key in expr.keys]
+            expr.values = [self._optimize_expr(value) for value in expr.values]
+            return expr
+
+        if isinstance(expr, SetExpr):
             expr.elements = [self._optimize_expr(element) for element in expr.elements]
             return expr
 

@@ -13,14 +13,17 @@ from compiler.core.ast import (
     CallExpr,
     CompareExpr,
     ClassDef,
+    DictExpr,
     ForStmt,
     FromImportStmt,
     FunctionDef,
     IfStmt,
     ImportStmt,
     IndexExpr,
+    PrintStmt,
     Program,
     RaiseStmt,
+    SetExpr,
     TryStmt,
     WhileStmt,
     BinaryExpr,
@@ -29,6 +32,7 @@ from compiler.core.ast import (
     MethodCallExpr,
     TupleExpr,
 )
+from compiler.core.types import ValueType
 from compiler.frontend import LexedSource, ParsedModule, lex_source, lower_cst, parse_tokens
 from compiler.ir import (
     CFGConstantPropagation,
@@ -152,10 +156,10 @@ def _program_uses_for_loops(program: Program) -> bool:
 
 
 def _expr_uses_container_features(expr) -> bool:
-    if isinstance(expr, (ListExpr, TupleExpr, IndexExpr)):
+    if isinstance(expr, (ListExpr, TupleExpr, DictExpr, SetExpr, IndexExpr)):
         return True
     if isinstance(expr, CallExpr):
-        if expr.func_name == "len":
+        if expr.func_name in {"len", "dict", "set", "list", "tuple"}:
             return True
         return any(_expr_uses_container_features(arg) for arg in expr.args)
     if isinstance(expr, BinaryExpr):
@@ -248,6 +252,148 @@ def _program_uses_object_features(program: Program) -> bool:
                 if value is not None and _expr_uses_object_features(value):
                     return True
                 if expr is not None and _expr_uses_object_features(expr):
+                    return True
+        return False
+
+    return walk(program.body)
+
+
+VM_ONLY_BUILTIN_CALLS = {
+    "str", "repr", "ascii", "int", "float", "bool", "list", "dict", "set", "tuple", "bytes", "bytearray",
+    "frozenset", "complex", "type", "isinstance", "issubclass", "hasattr", "getattr", "setattr", "delattr",
+    "callable", "id", "enumerate", "zip", "map", "filter", "reversed", "sorted", "iter", "next", "abs",
+    "round", "min", "max", "sum", "pow", "divmod", "hash", "hex", "oct", "bin", "chr", "ord", "format",
+    "input", "open", "any", "all", "object", "super", "property", "staticmethod", "classmethod", "vars",
+    "dir",
+}
+
+
+def _expr_uses_vm_only_builtin_calls(expr) -> bool:
+    if isinstance(expr, CallExpr):
+        if expr.func_name in VM_ONLY_BUILTIN_CALLS:
+            return True
+        return any(_expr_uses_vm_only_builtin_calls(arg) for arg in expr.args)
+    if isinstance(expr, BinaryExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.left) or _expr_uses_vm_only_builtin_calls(expr.right)
+    if isinstance(expr, CompareExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.left) or _expr_uses_vm_only_builtin_calls(expr.right)
+    if isinstance(expr, BoolOpExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.left) or _expr_uses_vm_only_builtin_calls(expr.right)
+    if isinstance(expr, UnaryExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.operand)
+    if isinstance(expr, IndexExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.collection) or _expr_uses_vm_only_builtin_calls(expr.index)
+    if isinstance(expr, ListExpr):
+        return any(_expr_uses_vm_only_builtin_calls(element) for element in expr.elements)
+    if isinstance(expr, TupleExpr):
+        return any(_expr_uses_vm_only_builtin_calls(element) for element in expr.elements)
+    if isinstance(expr, AttributeExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.object)
+    if isinstance(expr, MethodCallExpr):
+        return _expr_uses_vm_only_builtin_calls(expr.object) or any(_expr_uses_vm_only_builtin_calls(arg) for arg in expr.args)
+    return False
+
+
+def _program_uses_vm_only_builtin_calls(program: Program) -> bool:
+    def walk(statements: list[object]) -> bool:
+        for statement in statements:
+            if isinstance(statement, FunctionDef) and walk(statement.body):
+                return True
+            if isinstance(statement, ClassDef):
+                for method in statement.methods:
+                    if walk(method.body):
+                        return True
+            if isinstance(statement, IfStmt):
+                if _expr_uses_vm_only_builtin_calls(statement.condition) or walk(statement.body) or walk(statement.orelse):
+                    return True
+            elif isinstance(statement, WhileStmt):
+                if _expr_uses_vm_only_builtin_calls(statement.condition) or walk(statement.body):
+                    return True
+            elif isinstance(statement, ForStmt):
+                if _expr_uses_vm_only_builtin_calls(statement.iterator) or walk(statement.body):
+                    return True
+            elif isinstance(statement, TryStmt):
+                if walk(statement.body) or any(walk(handler.body) for handler in statement.handlers) or walk(statement.finalbody):
+                    return True
+            elif isinstance(statement, PrintStmt):
+                if any(_expr_uses_vm_only_builtin_calls(value) for value in statement.values):
+                    return True
+                if statement.sep is not None and _expr_uses_vm_only_builtin_calls(statement.sep):
+                    return True
+                if statement.end is not None and _expr_uses_vm_only_builtin_calls(statement.end):
+                    return True
+            else:
+                value = getattr(statement, "value", None)
+                expr = getattr(statement, "expr", None)
+                if value is not None and _expr_uses_vm_only_builtin_calls(value):
+                    return True
+                if expr is not None and _expr_uses_vm_only_builtin_calls(expr):
+                    return True
+        return False
+
+    return walk(program.body)
+
+
+def _expr_uses_vm_only_string_features(expr, semantic: SemanticModel) -> bool:
+    if isinstance(expr, BinaryExpr):
+        if expr.op == "+" and semantic.expr_type(expr) == ValueType.STRING:
+            return True
+        return _expr_uses_vm_only_string_features(expr.left, semantic) or _expr_uses_vm_only_string_features(expr.right, semantic)
+    if isinstance(expr, CallExpr):
+        return any(_expr_uses_vm_only_string_features(arg, semantic) for arg in expr.args)
+    if isinstance(expr, CompareExpr):
+        return _expr_uses_vm_only_string_features(expr.left, semantic) or _expr_uses_vm_only_string_features(expr.right, semantic)
+    if isinstance(expr, BoolOpExpr):
+        return _expr_uses_vm_only_string_features(expr.left, semantic) or _expr_uses_vm_only_string_features(expr.right, semantic)
+    if isinstance(expr, UnaryExpr):
+        return _expr_uses_vm_only_string_features(expr.operand, semantic)
+    if isinstance(expr, IndexExpr):
+        return _expr_uses_vm_only_string_features(expr.collection, semantic) or _expr_uses_vm_only_string_features(expr.index, semantic)
+    if isinstance(expr, ListExpr):
+        return any(_expr_uses_vm_only_string_features(element, semantic) for element in expr.elements)
+    if isinstance(expr, TupleExpr):
+        return any(_expr_uses_vm_only_string_features(element, semantic) for element in expr.elements)
+    if isinstance(expr, AttributeExpr):
+        return _expr_uses_vm_only_string_features(expr.object, semantic)
+    if isinstance(expr, MethodCallExpr):
+        return _expr_uses_vm_only_string_features(expr.object, semantic) or any(_expr_uses_vm_only_string_features(arg, semantic) for arg in expr.args)
+    return False
+
+
+def _program_uses_vm_only_print_or_string_features(program: Program, semantic: SemanticModel) -> bool:
+    def walk(statements: list[object]) -> bool:
+        for statement in statements:
+            if isinstance(statement, FunctionDef) and walk(statement.body):
+                return True
+            if isinstance(statement, ClassDef):
+                for method in statement.methods:
+                    if walk(method.body):
+                        return True
+            if isinstance(statement, IfStmt):
+                if _expr_uses_vm_only_string_features(statement.condition, semantic) or walk(statement.body) or walk(statement.orelse):
+                    return True
+            elif isinstance(statement, WhileStmt):
+                if _expr_uses_vm_only_string_features(statement.condition, semantic) or walk(statement.body):
+                    return True
+            elif isinstance(statement, ForStmt):
+                if _expr_uses_vm_only_string_features(statement.iterator, semantic) or walk(statement.body):
+                    return True
+            elif isinstance(statement, TryStmt):
+                if walk(statement.body) or any(walk(handler.body) for handler in statement.handlers) or walk(statement.finalbody):
+                    return True
+            elif isinstance(statement, PrintStmt):
+                if len(statement.values) != 1 or statement.sep is not None or statement.end is not None:
+                    return True
+                if semantic.expr_type(statement.values[0]) not in {ValueType.INT, ValueType.FLOAT, ValueType.BOOL, ValueType.STRING}:
+                    return True
+                if any(_expr_uses_vm_only_string_features(value, semantic) for value in statement.values):
+                    return True
+            else:
+                value = getattr(statement, "value", None)
+                expr = getattr(statement, "expr", None)
+                if value is not None and _expr_uses_vm_only_string_features(value, semantic):
+                    return True
+                if expr is not None and _expr_uses_vm_only_string_features(expr, semantic):
                     return True
         return False
 
@@ -393,6 +539,14 @@ def compile_source(
         return result
     if _program_uses_object_features(result.program):
         result.errors.error("Codegen", "native compilation does not support classes, attributes, or methods yet")
+        result.success = False
+        return result
+    if _program_uses_vm_only_builtin_calls(result.program):
+        result.errors.error("Codegen", "native compilation does not support these builtin calls yet")
+        result.success = False
+        return result
+    if _program_uses_vm_only_print_or_string_features(result.program, result.semantic):
+        result.errors.error("Codegen", "native compilation does not support multi-argument print, custom print sep/end, or string concatenation yet")
         result.success = False
         return result
 

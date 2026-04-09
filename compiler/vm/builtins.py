@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import builtins as py_builtins
+from typing import Protocol
+
+from compiler.vm.errors import VMError
+from compiler.vm.objects import unwrap_runtime_value
+
+
+class BuiltinHost(Protocol):
+    output: list[str]
+
+    def format_value(self, value: object) -> str: ...
+
+    def current_globals(self) -> dict[str, object]: ...
+
+    def current_locals(self) -> dict[str, object]: ...
+
+
+def builtin_range(*args):
+    if len(args) not in {1, 2, 3}:
+        raise VMError("range() expects 1 to 3 arguments")
+    normalized: list[int] = []
+    for index, value in enumerate((unwrap_runtime_value(arg) for arg in args), start=1):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise VMError(f"range() argument {index} must be int")
+        normalized.append(value)
+    return range(*normalized)
+
+
+def builtin_len(*args):
+    if len(args) != 1:
+        raise VMError("len() expects exactly 1 argument")
+    value = unwrap_runtime_value(args[0])
+    if not isinstance(value, (list, tuple, str, dict, set)):
+        raise VMError(f"len() expects a list, tuple, string, dict, or set, got {type(value).__name__}")
+    return len(value)
+
+
+def builtin_print(host: BuiltinHost, *args, sep=" ", end="\n", file=None, flush=False):
+    rendered_args = [host.format_value(unwrap_runtime_value(arg)) for arg in args]
+    rendered = str(unwrap_runtime_value(sep)).join(rendered_args) + str(unwrap_runtime_value(end))
+    if file is None:
+        host.output.append(rendered)
+        return None
+    file.write(rendered)
+    if flush and hasattr(file, "flush"):
+        file.flush()
+    return None
+
+
+def build_builtins(host: BuiltinHost) -> dict[str, object]:
+    return {
+        "print": lambda *args, sep=" ", end="\n", file=None, flush=False: builtin_print(
+            host, *args, sep=sep, end=end, file=file, flush=flush
+        ),
+        "len": builtin_len,
+        "range": builtin_range,
+        "int": int,
+        "float": float,
+        "str": str,
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+        "bytes": bytes,
+        "bytearray": bytearray,
+        "frozenset": frozenset,
+        "complex": complex,
+        "type": type,
+        "isinstance": isinstance,
+        "issubclass": issubclass,
+        "hasattr": hasattr,
+        "getattr": getattr,
+        "setattr": setattr,
+        "delattr": delattr,
+        "callable": callable,
+        "id": id,
+        "enumerate": enumerate,
+        "zip": zip,
+        "map": map,
+        "filter": filter,
+        "reversed": reversed,
+        "sorted": sorted,
+        "iter": iter,
+        "next": next,
+        "abs": abs,
+        "round": round,
+        "min": min,
+        "max": max,
+        "sum": sum,
+        "pow": pow,
+        "divmod": divmod,
+        "hash": hash,
+        "hex": hex,
+        "oct": oct,
+        "bin": bin,
+        "chr": chr,
+        "ord": ord,
+        "repr": repr,
+        "format": format,
+        "ascii": ascii,
+        "input": input,
+        "open": open,
+        "any": any,
+        "all": all,
+        "object": object,
+        "super": super,
+        "property": property,
+        "staticmethod": staticmethod,
+        "classmethod": classmethod,
+        "vars": vars,
+        "dir": dir,
+        "globals": host.current_globals,
+        "locals": host.current_locals,
+        "Exception": Exception,
+        "ValueError": ValueError,
+        "TypeError": TypeError,
+        "KeyError": KeyError,
+        "IndexError": IndexError,
+        "AttributeError": AttributeError,
+        "RuntimeError": RuntimeError,
+        "StopIteration": StopIteration,
+        "NameError": NameError,
+        "ImportError": ImportError,
+        "OSError": OSError,
+        "IOError": IOError,
+        "FileNotFoundError": FileNotFoundError,
+        "ZeroDivisionError": ZeroDivisionError,
+        "OverflowError": OverflowError,
+        "MemoryError": MemoryError,
+        "RecursionError": RecursionError,
+        "NotImplementedError": NotImplementedError,
+        "AssertionError": AssertionError,
+        "SystemExit": SystemExit,
+        "KeyboardInterrupt": KeyboardInterrupt,
+        "GeneratorExit": GeneratorExit,
+        "ArithmeticError": ArithmeticError,
+        "LookupError": LookupError,
+        "NotImplemented": NotImplemented,
+        "Ellipsis": ...,
+        "None": None,
+        "True": True,
+        "False": False,
+        "__builtins__": py_builtins,
+    }

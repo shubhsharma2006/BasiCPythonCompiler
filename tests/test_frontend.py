@@ -33,6 +33,26 @@ class FrontendTests(unittest.TestCase):
         self.assertFalse(errors.has_errors(), errors.render())
         self.assertEqual(len(program.body), 2)
 
+    def test_lowers_multi_argument_print_and_keywords(self):
+        _, _, program, errors = self.frontend('print("hello", "world", sep=", ", end="!")\n')
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lowers_f_string(self):
+        _, _, program, errors = self.frontend('name = "Ada"\nprint(f"Hello {name}")\n')
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lowers_membership_and_identity_compare(self):
+        _, _, program, errors = self.frontend("items = [1, 2]\nprint(1 in items)\nprint(items is items)\n")
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lowers_dict_and_set_literals(self):
+        _, _, program, errors = self.frontend('d = {"a": 1}\ns = {1, 2, 3}\nprint(d["a"])\n')
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
     def test_lowers_nested_function(self):
         _, _, program, errors = self.frontend(
             "def outer(x):\n"
@@ -53,6 +73,29 @@ class FrontendTests(unittest.TestCase):
         self.assertIsNotNone(program)
         self.assertFalse(errors.has_errors(), errors.render())
         self.assertEqual(len(program.body), 1)
+
+    def test_lowers_typed_except_with_binding(self):
+        _, _, program, errors = self.frontend(
+            "class MyError:\n"
+            "    def __init__(self, message):\n"
+            "        self.message = message\n"
+            "try:\n"
+            "    raise MyError(\"boom\")\n"
+            "except MyError as err:\n"
+            "    print(err.message)\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
+
+    def test_lowers_try_finally(self):
+        _, _, program, errors = self.frontend(
+            "try:\n"
+            "    print(1)\n"
+            "finally:\n"
+            "    print(2)\n"
+        )
+        self.assertIsNotNone(program)
+        self.assertFalse(errors.has_errors(), errors.render())
 
     def test_lowers_for_range_loop(self):
         _, _, program, errors = self.frontend(

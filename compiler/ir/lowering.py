@@ -154,7 +154,7 @@ class CFGLowering:
             return
 
         if isinstance(statement, PrintStmt):
-            value_name, value_type = self._emit_expr(statement.value)
+            value_name, value_type = self._emit_expr(statement.values[0])
             self._emit(Print(value_name, value_type))
             return
 

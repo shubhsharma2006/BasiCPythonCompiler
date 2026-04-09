@@ -10,6 +10,7 @@ from compiler.core.ast import (
     ClassDef,
     CompareExpr,
     ConstantExpr,
+    DictExpr,
     ExceptHandler,
     ExprStmt,
     ForStmt,
@@ -25,6 +26,7 @@ from compiler.core.ast import (
     Program,
     RaiseStmt,
     ReturnStmt,
+    SetExpr,
     TryStmt,
     TupleExpr,
     UnaryExpr,
@@ -36,6 +38,19 @@ from compiler.utils.error_handler import ErrorHandler
 
 
 class NameResolver:
+    BUILTIN_NAMES = {
+        "len", "range", "str", "repr", "ascii", "int", "float", "bool", "list", "dict", "set", "tuple",
+        "enumerate", "zip", "map", "filter", "reversed", "sorted", "iter", "next", "abs", "round", "min",
+        "max", "sum", "pow", "divmod", "hash", "hex", "oct", "bin", "chr", "ord", "format", "print",
+        "input", "open", "any", "all", "isinstance", "issubclass", "hasattr", "getattr", "setattr",
+        "delattr", "callable", "id", "type", "object", "super", "property", "staticmethod", "classmethod",
+        "vars", "dir", "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "AttributeError",
+        "RuntimeError", "StopIteration", "NameError", "ImportError", "OSError", "IOError",
+        "FileNotFoundError", "ZeroDivisionError", "OverflowError", "MemoryError", "RecursionError",
+        "NotImplementedError", "AssertionError", "SystemExit", "KeyboardInterrupt", "GeneratorExit",
+        "ArithmeticError", "LookupError",
+    }
+
     def __init__(self, errors: ErrorHandler):
         self.errors = errors
         self.table: SymbolTable | None = None
@@ -59,7 +74,7 @@ class NameResolver:
 
     @staticmethod
     def _is_builtin_function(name: str) -> bool:
-        return name in {"len", "range"}
+        return name in NameResolver.BUILTIN_NAMES
 
     def _resolve_function(self, function: FunctionType) -> None:
         if function.state == "done":
@@ -103,7 +118,12 @@ class NameResolver:
             return
 
         if isinstance(statement, PrintStmt):
-            self._resolve_expr(statement.value, scope)
+            for value in statement.values:
+                self._resolve_expr(value, scope)
+            if statement.sep is not None:
+                self._resolve_expr(statement.sep, scope)
+            if statement.end is not None:
+                self._resolve_expr(statement.end, scope)
             return
 
         if isinstance(statement, ExprStmt):
@@ -138,6 +158,8 @@ class NameResolver:
                 self._resolve_statement(child, scope)
             for handler in statement.handlers:
                 self._resolve_handler(handler, scope)
+            for child in statement.finalbody:
+                self._resolve_statement(child, scope)
             return
 
         if isinstance(statement, FunctionDef):
@@ -246,6 +268,18 @@ class NameResolver:
                 self._resolve_expr(element, scope)
             return
 
+        if isinstance(expr, DictExpr):
+            for key in expr.keys:
+                self._resolve_expr(key, scope)
+            for value in expr.values:
+                self._resolve_expr(value, scope)
+            return
+
+        if isinstance(expr, SetExpr):
+            for element in expr.elements:
+                self._resolve_expr(element, scope)
+            return
+
         if isinstance(expr, IndexExpr):
             self._resolve_expr(expr.collection, scope)
             self._resolve_expr(expr.index, scope)
@@ -284,5 +318,10 @@ class NameResolver:
         return None
 
     def _resolve_handler(self, handler: ExceptHandler, scope: Scope) -> None:
+        handler_scope = Scope(scope)
+        if handler.type_name is not None and handler_scope.lookup(handler.type_name) is None and not self._is_builtin_function(handler.type_name):
+            self._error(handler, f"undefined exception type {handler.type_name!r}")
+        if handler.name is not None:
+            handler_scope.define(handler.name, ValueType.UNKNOWN)
         for child in handler.body:
-            self._resolve_statement(child, scope)
+            self._resolve_statement(child, handler_scope)

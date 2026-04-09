@@ -68,6 +68,41 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("PRINT", str(result.bytecode))
         self.assertEqual(run_output.strip().splitlines(), ["7"])
 
+    def test_execute_source_supports_multi_argument_print(self):
+        result, run_output, rendered = self.execute_program(
+            'print("hello", "world", sep=", ", end="!")\n'
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output, "hello, world!")
+
+    def test_execute_source_supports_f_strings(self):
+        result, run_output, rendered = self.execute_program(
+            'name = "Ada"\nprint(f"Hello {name}")\n'
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["Hello Ada"])
+
+    def test_execute_source_supports_in_and_is_operators(self):
+        result, run_output, rendered = self.execute_program(
+            "items = [1, 2, 3]\n"
+            "print(2 in items)\n"
+            "print(4 not in items)\n"
+            "print(items is items)\n"
+            "print(items is not [1, 2, 3])\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["True", "True", "True", "True"])
+
+    def test_execute_source_supports_additional_builtins(self):
+        result, run_output, rendered = self.execute_program(
+            "items = [3, 1, 2]\n"
+            "print(sorted(items)[0])\n"
+            "print(str(10))\n"
+            "print(abs(-4))\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["1", "10", "4"])
+
     def test_execute_source_supports_local_from_import(self):
         result, run_output, rendered = self.execute_program_file(
             "from util import add\nprint(add(2, 5))\n",
@@ -97,6 +132,44 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(result.success, rendered)
         self.assertEqual(run_output.strip().splitlines(), ["handled"])
 
+    def test_execute_source_supports_typed_except_with_binding(self):
+        result, run_output, rendered = self.execute_program(
+            "class MyError:\n"
+            "    def __init__(self, message):\n"
+            "        self.message = message\n\n"
+            "try:\n"
+            "    raise MyError(\"boom\")\n"
+            "except MyError as err:\n"
+            "    print(err.message)\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["boom"])
+
+    def test_execute_source_supports_try_finally_on_return(self):
+        result, run_output, rendered = self.execute_program(
+            "def compute():\n"
+            "    try:\n"
+            "        return 7\n"
+            "    finally:\n"
+            "        print(\"cleanup\")\n\n"
+            "print(compute())\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["cleanup", "7"])
+
+    def test_execute_source_runs_finally_before_outer_exception_handler(self):
+        result, run_output, rendered = self.execute_program(
+            "try:\n"
+            "    try:\n"
+            "        raise \"boom\"\n"
+            "    finally:\n"
+            "        print(\"cleanup\")\n"
+            "except:\n"
+            "    print(\"handled\")\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["cleanup", "handled"])
+
     def test_execute_source_supports_for_range(self):
         result, run_output, rendered = self.execute_program(
             "for i in range(1, 4):\n"
@@ -117,6 +190,19 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertTrue(result.success, rendered)
         self.assertEqual(run_output.strip().splitlines(), ["3", "20", "4", "e"])
+
+    def test_execute_source_supports_dicts_sets_and_container_methods(self):
+        result, run_output, rendered = self.execute_program(
+            'd = {"a": 1, "b": 2}\n'
+            "print(d[\"a\"])\n"
+            "print(len(d))\n"
+            "print(d.get(\"b\"))\n"
+            "s = {1, 2}\n"
+            "s.add(3)\n"
+            "print(3 in s)\n"
+        )
+        self.assertTrue(result.success, rendered)
+        self.assertEqual(run_output.strip().splitlines(), ["1", "2", "2", "True"])
 
     def test_execute_source_supports_classes_attributes_and_methods(self):
         result, run_output, rendered = self.execute_program(
@@ -211,6 +297,28 @@ class PipelineTests(unittest.TestCase):
             )
         self.assertFalse(result.success)
         self.assertIn("native compilation does not support classes, attributes, or methods yet", result.errors.render())
+
+    def test_compile_source_rejects_multi_argument_print_for_native_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = os.path.join(temp_dir, "program.c")
+            result = compile_source(
+                'print("hello", "world")\n',
+                filename="inline.py",
+                output=output_path,
+            )
+        self.assertFalse(result.success)
+        self.assertIn("native compilation does not support multi-argument print", result.errors.render())
+
+    def test_compile_source_rejects_vm_only_builtin_calls_for_native_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = os.path.join(temp_dir, "program.c")
+            result = compile_source(
+                "print(str(10))\n",
+                filename="inline.py",
+                output=output_path,
+            )
+        self.assertFalse(result.success)
+        self.assertIn("native compilation does not support these builtin calls yet", result.errors.render())
 
     def test_forward_reference_compiles(self):
         source = (

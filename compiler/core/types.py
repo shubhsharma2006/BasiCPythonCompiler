@@ -11,6 +11,8 @@ class ValueType(str, Enum):
     STRING = "str"
     LIST = "list"
     TUPLE = "tuple"
+    DICT = "dict"
+    SET = "set"
     VOID = "void"
     UNKNOWN = "unknown"
 
@@ -32,7 +34,16 @@ def is_numeric(value_type: ValueType) -> bool:
 
 
 def can_truth_test(value_type: ValueType) -> bool:
-    return value_type in (ValueType.BOOL, ValueType.INT, ValueType.FLOAT)
+    return value_type in (
+        ValueType.BOOL,
+        ValueType.INT,
+        ValueType.FLOAT,
+        ValueType.STRING,
+        ValueType.LIST,
+        ValueType.TUPLE,
+        ValueType.DICT,
+        ValueType.SET,
+    )
 
 
 def merge_types(left: ValueType, right: ValueType) -> ValueType | None:
