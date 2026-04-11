@@ -19,8 +19,10 @@ from compiler.core.ast import (
     FromImportStmt,
     FunctionDef,
     IfStmt,
+    IfExpr,
     ImportStmt,
     IndexExpr,
+    LambdaExpr,
     ListExpr,
     MethodCallExpr,
     NameExpr,
@@ -45,6 +47,7 @@ class PythonSubsetLowerer:
     def __init__(self, errors: ErrorHandler):
         self.errors = errors
         self._function_depth = 0
+        self._lambda_counter = 0
 
     def lower(self, module: ParsedModule) -> Program | None:
         body = self._lower_body(module.syntax_tree.body, allow_docstring=True)
@@ -115,6 +118,24 @@ class PythonSubsetLowerer:
             body = self._lower_body(node.body, allow_docstring=True) or []
             orelse = self._lower_body(node.orelse, allow_docstring=True) or []
             return IfStmt(span=self._span(node), condition=condition, body=body, orelse=orelse)
+
+        if isinstance(node, ast.Assert):
+            # Desugar: assert cond, msg  ->  if not cond: raise AssertionError(msg)
+            condition = self._lower_expr(node.test)
+            if condition is None:
+                return None
+            negated = UnaryExpr(span=self._span(node), op="not", operand=condition)
+            if node.msg is not None:
+                msg = self._lower_expr(node.msg)
+                if msg is None:
+                    return None
+                error_call = CallExpr(span=self._span(node), func_name="AssertionError", args=[msg])
+            else:
+                error_call = CallExpr(span=self._span(node), func_name="AssertionError", args=[
+                    ConstantExpr(span=self._span(node), value="assertion failed")
+                ])
+            raise_stmt = RaiseStmt(span=self._span(node), value=error_call)
+            return IfStmt(span=self._span(node), condition=negated, body=[raise_stmt], orelse=[])
 
         if isinstance(node, ast.While):
             condition = self._lower_expr(node.test)
@@ -424,6 +445,34 @@ class PythonSubsetLowerer:
             if obj is None:
                 return None
             return AttributeExpr(span=self._span(node), object=obj, attr_name=node.attr)
+
+        if isinstance(node, ast.IfExp):
+            condition = self._lower_expr(node.test)
+            body = self._lower_expr(node.body)
+            orelse = self._lower_expr(node.orelse)
+            if condition is None or body is None or orelse is None:
+                return None
+            return IfExpr(span=self._span(node), condition=condition, body=body, orelse=orelse)
+
+        if isinstance(node, ast.Lambda):
+            self._lambda_counter += 1
+            name = f"<lambda_{self._lambda_counter}>"
+            lowered_body = self._lower_expr(node.body)
+            if lowered_body is None:
+                return None
+            return_stmt = ReturnStmt(span=self._span(node), value=lowered_body)
+            params = [arg.arg for arg in node.args.args]
+            defaults = [self._lower_expr(d) for d in node.args.defaults]
+            if any(d is None for d in defaults):
+                return None
+            func_def = FunctionDef(
+                span=self._span(node),
+                name=name,
+                params=params,
+                body=[return_stmt],
+                defaults=defaults,
+            )
+            return LambdaExpr(span=self._span(node), func_def=func_def)
 
         self._unsupported(node, f"expression {type(node).__name__} is not supported")
         return None

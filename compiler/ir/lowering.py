@@ -11,7 +11,9 @@ from compiler.core.ast import (
     ForStmt,
     FunctionDef,
     IfStmt,
+    IfExpr,
     NameExpr,
+    LambdaExpr,
     PrintStmt,
     Program,
     ReturnStmt,
@@ -325,6 +327,33 @@ class CFGLowering:
             self._terminate(ReturnTerminator(value_name))
 
     def _emit_expr(self, expr, discard_result: bool = False) -> tuple[str, ValueType]:
+        if isinstance(expr, IfExpr):
+            condition_name, _ = self._emit_expr(expr.condition)
+            result_type = self._runtime_type(expr.body)
+            result = self._new_temp(result_type)
+            
+            true_block = self._new_block("ifexpr_true")
+            false_block = self._new_block("ifexpr_false")
+            merge_block = self._new_block("ifexpr_merge")
+            
+            self._terminate(BranchTerminator(condition_name, true_block.name, false_block.name))
+            
+            self._switch_to(true_block)
+            body_name, _ = self._emit_expr(expr.body)
+            self._emit(Assign(result, body_name))
+            self._terminate(JumpTerminator(merge_block.name))
+            
+            self._switch_to(false_block)
+            orelse_name, _ = self._emit_expr(expr.orelse)
+            self._emit(Assign(result, orelse_name))
+            self._terminate(JumpTerminator(merge_block.name))
+            
+            self._switch_to(merge_block)
+            return result, result_type
+
+        if isinstance(expr, LambdaExpr):
+            return "0", ValueType.UNKNOWN
+
         if isinstance(expr, ConstantExpr):
             value_type = self._runtime_type(expr)
             temp = self._new_temp(value_type)

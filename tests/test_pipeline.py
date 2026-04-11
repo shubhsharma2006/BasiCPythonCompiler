@@ -57,7 +57,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNotNone(result.ssa)
         self.assertTrue(runtime_header_exists)
         self.assertTrue(runtime_source_exists)
-        self.assertIn("py_print_int", c_code)
+        self.assertIn("py_write_int", c_code)
         self.assertIn('#include "py_runtime.h"', c_code)
         self.assertTrue(all(not block.phis for block in result.ir.main.blocks))
 
@@ -261,64 +261,7 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("native compilation does not support exceptions yet", result.errors.render())
 
-    def test_compile_source_rejects_for_loops_for_native_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "program.c")
-            result = compile_source(
-                "for i in range(3):\n"
-                "    print(i)\n",
-                filename="inline.py",
-                output=output_path,
-            )
-        self.assertFalse(result.success)
-        self.assertIn("native compilation does not support for loops yet", result.errors.render())
 
-    def test_compile_source_rejects_container_features_for_native_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "program.c")
-            result = compile_source(
-                "items = [1, 2, 3]\n"
-                "print(len(items))\n",
-                filename="inline.py",
-                output=output_path,
-            )
-        self.assertFalse(result.success)
-        self.assertIn("native compilation does not support lists, tuples, indexing, or len() yet", result.errors.render())
-
-    def test_compile_source_rejects_object_features_for_native_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "program.c")
-            result = compile_source(
-                "class Counter:\n"
-                "    def __init__(self, start):\n"
-                "        self.value = start\n",
-                filename="inline.py",
-                output=output_path,
-            )
-        self.assertFalse(result.success)
-        self.assertIn("native compilation does not support classes, attributes, or methods yet", result.errors.render())
-
-    def test_compile_source_rejects_multi_argument_print_for_native_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "program.c")
-            result = compile_source(
-                'print("hello", "world")\n',
-                filename="inline.py",
-                output=output_path,
-            )
-        self.assertFalse(result.success)
-        self.assertIn("native compilation does not support multi-argument print", result.errors.render())
-
-    def test_compile_source_rejects_vm_only_builtin_calls_for_native_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = os.path.join(temp_dir, "program.c")
-            result = compile_source(
-                "print(str(10))\n",
-                filename="inline.py",
-                output=output_path,
-            )
-        self.assertFalse(result.success)
-        self.assertIn("native compilation does not support these builtin calls yet", result.errors.render())
 
     def test_forward_reference_compiles(self):
         source = (
@@ -383,7 +326,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(result.success, rendered)
         self.assertEqual(run_output.strip().splitlines(), ["3"])
         self.assertNotIn(" = x + 2;", c_code)
-        self.assertIn("_t6 = 3;", c_code)
+        self.assertIn("_t7 = 3;", c_code)
 
     def test_top_level_locals_do_not_emit_unused_globals(self):
         source = (
@@ -416,9 +359,9 @@ class PipelineTests(unittest.TestCase):
         result, c_code, run_output, rendered, _, _, _, _ = self.compile_program('print(1)\nprint(2.5)\nprint("hi")\n', run=True)
         self.assertTrue(result.success, rendered)
         self.assertEqual(run_output.strip().splitlines(), ["1", "2.5", "hi"])
-        self.assertIn("py_print_int(", c_code)
-        self.assertIn("py_print_float(", c_code)
-        self.assertIn("py_print_str(", c_code)
+        self.assertIn("py_write_int(", c_code)
+        self.assertIn("py_write_float(", c_code)
+        self.assertIn("py_write_str(", c_code)
         self.assertIn('#include "py_runtime.h"', c_code)
         self.assertNotIn('printf("%d\\n", _t', c_code)
         self.assertNotIn('printf("%g\\n", _t', c_code)

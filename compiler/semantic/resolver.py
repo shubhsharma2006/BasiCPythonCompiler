@@ -17,8 +17,10 @@ from compiler.core.ast import (
     FromImportStmt,
     FunctionDef,
     IfStmt,
+    IfExpr,
     IndexExpr,
     ImportStmt,
+    LambdaExpr,
     ListExpr,
     MethodCallExpr,
     NameExpr,
@@ -282,6 +284,25 @@ class NameResolver:
         if isinstance(expr, SetExpr):
             for element in expr.elements:
                 self._resolve_expr(element, scope)
+            return
+
+        if isinstance(expr, IfExpr):
+            self._resolve_expr(expr.condition, scope)
+            self._resolve_expr(expr.body, scope)
+            self._resolve_expr(expr.orelse, scope)
+            return
+
+        if isinstance(expr, LambdaExpr):
+            self._resolve_local_function(
+                expr.func_def,
+                scope,
+                FunctionType(
+                    name=expr.func_def.name,
+                    param_names=expr.func_def.params,
+                    param_types=[ValueType.UNKNOWN for _ in expr.func_def.params],
+                    node=expr.func_def,
+                )
+            )
             return
 
         if isinstance(expr, IndexExpr):

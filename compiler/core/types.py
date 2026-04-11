@@ -26,6 +26,7 @@ class FunctionType:
     return_type: ValueType = ValueType.UNKNOWN
     state: str = "unvisited"
     reachable: bool = False
+    has_value_return: bool = False
     node: object | None = None
     local_types: dict[str, ValueType] = field(default_factory=dict)
 

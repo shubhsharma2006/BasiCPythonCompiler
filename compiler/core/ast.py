@@ -179,6 +179,18 @@ class BoolOpExpr(Expression):
 
 
 @dataclass
+class IfExpr(Expression):
+    condition: Expression
+    body: Expression
+    orelse: Expression
+
+
+@dataclass
+class LambdaExpr(Expression):
+    func_def: FunctionDef
+
+
+@dataclass
 class CallExpr(Expression):
     func_name: str
     args: list[Expression]

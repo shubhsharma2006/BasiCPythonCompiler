@@ -272,6 +272,28 @@ class BytecodeInterpreter:
                 raise VMError(f"cannot call {func_name!r}")
             frame.stack.append(self._invoke_callable(callable_obj, args, frame.module))
             return
+        if op == "CALL_FUNCTION_KW":
+            func_name, argc, kw_names = arg
+            kw_count = len(kw_names)
+            kw_values = [frame.stack.pop() for _ in range(kw_count)]
+            kw_values.reverse()
+            kwargs = dict(zip(kw_names, kw_values))
+            args = [frame.stack.pop() for _ in range(argc)]
+            args.reverse()
+            callable_obj = frame.locals.get(func_name, frame.globals.get(func_name))
+            if callable_obj is None:
+                for scope in frame.closure_scopes:
+                    if func_name in scope:
+                        callable_obj = scope[func_name]
+                        break
+            if callable_obj is None:
+                callable_obj = self.builtins.get(func_name)
+            if callable_obj is None:
+                raise VMError(f"cannot call {func_name!r}")
+            frame.stack.append(
+                py_invoke_callable(callable_obj, args, frame.module, kwargs=kwargs, execute_function=self._execute_function)
+            )
+            return
         if op == "CALL_METHOD":
             method_name, argc = arg
             args = [frame.stack.pop() for _ in range(argc)]
@@ -280,6 +302,20 @@ class BytecodeInterpreter:
             callable_obj = py_load_attr(obj, method_name)
             frame.stack.append(
                 py_invoke_callable(callable_obj, args, frame.module, execute_function=self._execute_function)
+            )
+            return
+        if op == "CALL_METHOD_KW":
+            method_name, argc, kw_names = arg
+            kw_count = len(kw_names)
+            kw_values = [frame.stack.pop() for _ in range(kw_count)]
+            kw_values.reverse()
+            kwargs = dict(zip(kw_names, kw_values))
+            args = [frame.stack.pop() for _ in range(argc)]
+            args.reverse()
+            obj = frame.stack.pop()
+            callable_obj = py_load_attr(obj, method_name)
+            frame.stack.append(
+                py_invoke_callable(callable_obj, args, frame.module, kwargs=kwargs, execute_function=self._execute_function)
             )
             return
         if op == "MAKE_FUNCTION":

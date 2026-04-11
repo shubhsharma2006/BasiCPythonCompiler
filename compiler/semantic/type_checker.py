@@ -17,8 +17,10 @@ from compiler.core.ast import (
     FromImportStmt,
     FunctionDef,
     IfStmt,
+    IfExpr,
     IndexExpr,
     ImportStmt,
+    LambdaExpr,
     ListExpr,
     MethodCallExpr,
     NameExpr,
@@ -101,7 +103,7 @@ class TypeChecker:
         self.current_function = previous
         self.local_functions.pop()
 
-        if function.return_type == ValueType.UNKNOWN:
+        if function.return_type == ValueType.UNKNOWN and not function.has_value_return:
             function.return_type = ValueType.VOID
         function.state = "done"
 
@@ -233,6 +235,8 @@ class TypeChecker:
             if self.current_function is None:
                 return
             value_type = ValueType.VOID if statement.value is None else self._check_expr(statement.value, scope)
+            if statement.value is not None:
+                self.current_function.has_value_return = True
             merged = merge_types(self.current_function.return_type, value_type)
             if merged is None:
                 self._error(statement, f"incompatible return type {value_type.value} in function {self.current_function.name!r}")
@@ -373,6 +377,26 @@ class TypeChecker:
                     self._error(element, "set elements cannot be void")
             return self._set_expr_type(expr, ValueType.SET)
 
+        if isinstance(expr, IfExpr):
+            condition_type = self._check_expr(expr.condition, scope)
+            if condition_type != ValueType.UNKNOWN and not can_truth_test(condition_type):
+                self._error(expr.condition, f"ternary condition must be bool or numeric, got {condition_type.value}")
+            body_type = self._check_expr(expr.body, scope)
+            orelse_type = self._check_expr(expr.orelse, scope)
+            merged = merge_types(body_type, orelse_type)
+            result_type = merged if merged is not None else ValueType.UNKNOWN
+            return self._set_expr_type(expr, result_type)
+
+        if isinstance(expr, LambdaExpr):
+            local_function = FunctionType(
+                name=expr.func_def.name,
+                param_names=expr.func_def.params,
+                param_types=[ValueType.UNKNOWN for _ in expr.func_def.params],
+                node=expr.func_def,
+            )
+            self._check_local_function(expr.func_def, scope, local_function)
+            return self._set_expr_type(expr, ValueType.UNKNOWN)
+
         if isinstance(expr, IndexExpr):
             collection_type = self._check_expr(expr.collection, scope)
             index_type = self._check_expr(expr.index, scope)
@@ -424,7 +448,7 @@ class TypeChecker:
             self._check_statement(child, scope)
         self.current_function = previous
         self.local_functions.pop()
-        if local_function.return_type == ValueType.UNKNOWN:
+        if local_function.return_type == ValueType.UNKNOWN and not local_function.has_value_return:
             local_function.return_type = ValueType.VOID
 
     def _lookup_local_function(self, name: str) -> FunctionType | None:

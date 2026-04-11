@@ -6,18 +6,22 @@ from compiler.core.ast import (
     AttributeExpr,
     BinaryExpr,
     BoolOpExpr,
+    BreakStmt,
     CallExpr,
     ClassDef,
     CompareExpr,
     ConstantExpr,
+    ContinueStmt,
     DictExpr,
     ExprStmt,
     ForStmt,
     FromImportStmt,
     FunctionDef,
     IfStmt,
-    IndexExpr,
+    IfExpr,
     ImportStmt,
+    IndexExpr,
+    LambdaExpr,
     ListExpr,
     MethodCallExpr,
     NameExpr,
@@ -118,7 +122,7 @@ class BytecodeLowerer:
             return
 
         if isinstance(statement, RaiseStmt):
-            self._emit_expr(statement.value, instructions)
+            self._emit_expr(statement.value, instructions, parent_key)
             instructions.append(Instruction("RAISE"))
             return
 
@@ -169,14 +173,14 @@ class BytecodeLowerer:
             return
 
         if isinstance(statement, ExprStmt):
-            self._emit_expr(statement.expr, instructions)
+            self._emit_expr(statement.expr, instructions, parent_key)
             instructions.append(Instruction("POP_TOP"))
             return
 
         if isinstance(statement, IfStmt):
             else_label = self._new_label("if_else")
             end_label = self._new_label("if_end")
-            self._emit_expr(statement.condition, instructions)
+            self._emit_expr(statement.condition, instructions, parent_key)
             instructions.append(Instruction("JUMP_IF_FALSE", else_label))
             for child in statement.body:
                 self._emit_statement(child, instructions, parent_key)
@@ -199,7 +203,7 @@ class BytecodeLowerer:
                 false_target = end_label
                 break_target = end_label
             instructions.append(Instruction("LABEL", start_label))
-            self._emit_expr(statement.condition, instructions)
+            self._emit_expr(statement.condition, instructions, parent_key)
             instructions.append(Instruction("JUMP_IF_FALSE", false_target))
             self.loop_stack.append((start_label, break_target))
             for child in statement.body:
@@ -224,7 +228,7 @@ class BytecodeLowerer:
                 end_label = self._new_label("for_end")
                 false_target = end_label
                 break_target = end_label
-            self._emit_expr(statement.iterator, instructions)
+            self._emit_expr(statement.iterator, instructions, parent_key)
             instructions.append(Instruction("GET_ITER"))
             instructions.append(Instruction("LABEL", start_label))
             instructions.append(Instruction("FOR_ITER", false_target))
@@ -255,10 +259,29 @@ class BytecodeLowerer:
             if statement.value is None:
                 instructions.append(Instruction("LOAD_CONST", None))
             else:
-                self._emit_expr(statement.value, instructions)
+                self._emit_expr(statement.value, instructions, parent_key)
             instructions.append(Instruction("RETURN_VALUE"))
 
-    def _emit_expr(self, expr, instructions: list[Instruction]) -> None:
+    def _emit_expr(self, expr, instructions: list[Instruction], parent_key: str = "<module>") -> None:
+        if isinstance(expr, IfExpr):
+            else_label = self._new_label("ifexpr_else")
+            end_label = self._new_label("ifexpr_end")
+            self._emit_expr(expr.condition, instructions, parent_key)
+            instructions.append(Instruction("JUMP_IF_FALSE", else_label))
+            self._emit_expr(expr.body, instructions, parent_key)
+            instructions.append(Instruction("JUMP", end_label))
+            instructions.append(Instruction("LABEL", else_label))
+            self._emit_expr(expr.orelse, instructions, parent_key)
+            instructions.append(Instruction("LABEL", end_label))
+            return
+
+        if isinstance(expr, LambdaExpr):
+            lowered = self._lower_function(expr.func_def, parent_key=parent_key or "<lambda>")
+            for default in expr.func_def.defaults:
+                self._emit_expr(default, instructions, parent_key)
+            instructions.append(Instruction("MAKE_FUNCTION", (lowered.key, len(expr.func_def.defaults))))
+            return
+
         if isinstance(expr, ConstantExpr):
             instructions.append(Instruction("LOAD_CONST", expr.value))
             return
@@ -268,36 +291,36 @@ class BytecodeLowerer:
             return
 
         if isinstance(expr, BinaryExpr):
-            self._emit_expr(expr.left, instructions)
-            self._emit_expr(expr.right, instructions)
+            self._emit_expr(expr.left, instructions, parent_key)
+            self._emit_expr(expr.right, instructions, parent_key)
             instructions.append(Instruction("BINARY_OP", expr.op))
             return
 
         if isinstance(expr, CompareExpr):
-            self._emit_expr(expr.left, instructions)
-            self._emit_expr(expr.right, instructions)
+            self._emit_expr(expr.left, instructions, parent_key)
+            self._emit_expr(expr.right, instructions, parent_key)
             instructions.append(Instruction("COMPARE_OP", expr.op))
             return
 
         if isinstance(expr, UnaryExpr):
-            self._emit_expr(expr.operand, instructions)
+            self._emit_expr(expr.operand, instructions, parent_key)
             instructions.append(Instruction("UNARY_OP", expr.op))
             return
 
         if isinstance(expr, BoolOpExpr):
             end_label = self._new_label("bool_end")
             short_label = self._new_label("bool_short")
-            self._emit_expr(expr.left, instructions)
+            self._emit_expr(expr.left, instructions, parent_key)
             if expr.op == "and":
                 instructions.append(Instruction("JUMP_IF_FALSE", short_label))
-                self._emit_expr(expr.right, instructions)
+                self._emit_expr(expr.right, instructions, parent_key)
                 instructions.append(Instruction("TO_BOOL"))
                 instructions.append(Instruction("JUMP", end_label))
                 instructions.append(Instruction("LABEL", short_label))
                 instructions.append(Instruction("LOAD_CONST", False))
             else:
                 instructions.append(Instruction("JUMP_IF_TRUE", short_label))
-                self._emit_expr(expr.right, instructions)
+                self._emit_expr(expr.right, instructions, parent_key)
                 instructions.append(Instruction("TO_BOOL"))
                 instructions.append(Instruction("JUMP", end_label))
                 instructions.append(Instruction("LABEL", short_label))
@@ -307,10 +330,10 @@ class BytecodeLowerer:
 
         if isinstance(expr, CallExpr):
             for arg in expr.args:
-                self._emit_expr(arg, instructions)
+                self._emit_expr(arg, instructions, parent_key)
             if expr.kwargs:
-                for value in expr.kwargs.values():
-                    self._emit_expr(value, instructions)
+                for kw_arg in expr.kwargs.values():
+                    self._emit_expr(kw_arg, instructions, parent_key)
                 instructions.append(Instruction("CALL_FUNCTION_KW", (expr.func_name, len(expr.args), list(expr.kwargs.keys()))))
             else:
                 instructions.append(Instruction("CALL_FUNCTION", (expr.func_name, len(expr.args))))
@@ -318,47 +341,47 @@ class BytecodeLowerer:
 
         if isinstance(expr, ListExpr):
             for element in expr.elements:
-                self._emit_expr(element, instructions)
+                self._emit_expr(element, instructions, parent_key)
             instructions.append(Instruction("BUILD_LIST", len(expr.elements)))
             return
 
         if isinstance(expr, TupleExpr):
             for element in expr.elements:
-                self._emit_expr(element, instructions)
+                self._emit_expr(element, instructions, parent_key)
             instructions.append(Instruction("BUILD_TUPLE", len(expr.elements)))
             return
 
         if isinstance(expr, DictExpr):
             for key, value in zip(expr.keys, expr.values):
-                self._emit_expr(key, instructions)
-                self._emit_expr(value, instructions)
+                self._emit_expr(key, instructions, parent_key)
+                self._emit_expr(value, instructions, parent_key)
             instructions.append(Instruction("BUILD_MAP", len(expr.keys)))
             return
 
         if isinstance(expr, SetExpr):
             for element in expr.elements:
-                self._emit_expr(element, instructions)
+                self._emit_expr(element, instructions, parent_key)
             instructions.append(Instruction("BUILD_SET", len(expr.elements)))
             return
 
         if isinstance(expr, IndexExpr):
-            self._emit_expr(expr.collection, instructions)
-            self._emit_expr(expr.index, instructions)
+            self._emit_expr(expr.collection, instructions, parent_key)
+            self._emit_expr(expr.index, instructions, parent_key)
             instructions.append(Instruction("BINARY_SUBSCR"))
             return
 
         if isinstance(expr, AttributeExpr):
-            self._emit_expr(expr.object, instructions)
+            self._emit_expr(expr.object, instructions, parent_key)
             instructions.append(Instruction("LOAD_ATTR", expr.attr_name))
             return
 
         if isinstance(expr, MethodCallExpr):
-            self._emit_expr(expr.object, instructions)
+            self._emit_expr(expr.object, instructions, parent_key)
             for arg in expr.args:
-                self._emit_expr(arg, instructions)
+                self._emit_expr(arg, instructions, parent_key)
             if expr.kwargs:
-                for value in expr.kwargs.values():
-                    self._emit_expr(value, instructions)
+                for kw_arg in expr.kwargs.values():
+                    self._emit_expr(kw_arg, instructions, parent_key)
                 instructions.append(Instruction("CALL_METHOD_KW", (expr.method_name, len(expr.args), list(expr.kwargs.keys()))))
             else:
                 instructions.append(Instruction("CALL_METHOD", (expr.method_name, len(expr.args))))

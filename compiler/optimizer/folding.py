@@ -13,8 +13,10 @@ from compiler.core.ast import (
     FunctionDef,
     ForStmt,
     IfStmt,
+    IfExpr,
     IndexExpr,
     DictExpr,
+    LambdaExpr,
     ListExpr,
     MethodCallExpr,
     PrintStmt,
@@ -151,6 +153,18 @@ class ConstantFolder:
 
         if isinstance(expr, SetExpr):
             expr.elements = [self._optimize_expr(element) for element in expr.elements]
+            return expr
+
+        if isinstance(expr, IfExpr):
+            expr.condition = self._optimize_expr(expr.condition)
+            expr.body = self._optimize_expr(expr.body)
+            expr.orelse = self._optimize_expr(expr.orelse)
+            if isinstance(expr.condition, ConstantExpr):
+                return expr.body if bool(expr.condition.value) else expr.orelse
+            return expr
+
+        if isinstance(expr, LambdaExpr):
+            expr.func_def.body = self._optimize_statements(expr.func_def.body)
             return expr
 
         if isinstance(expr, IndexExpr):
